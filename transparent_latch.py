@@ -26,6 +26,7 @@ class TransparentLatch(Elaboratable):
             latch is transparent. Otherwise, the output is the input when
             le was last 1, that is, the latch is latched.
     """
+
     def __init__(self, size: int):
         """Constructs a transparent latch.
 
@@ -54,7 +55,7 @@ class TransparentLatch(Elaboratable):
 
         m.d.le_clk += internal_reg.eq(self.data_in)
         m.d.comb += self.data_out.eq(Mux(self.n_oe, 0, internal_reg))
-        with m.If(~self.le & ~self.n_oe):
+        with m.If(self.le & ~self.n_oe):
             m.d.comb += self.data_out.eq(self.data_in)
 
         return m
