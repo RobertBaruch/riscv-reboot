@@ -25,7 +25,7 @@ END
 design -stash dff2ff
 read_ilang toplevel.il
 proc
-techmap -map %dff2ff top/w:clk %co*
+techmap -map %dff2ff top/w:clk %co
 prep -top top
 
 [files]
