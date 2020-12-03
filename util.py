@@ -8,8 +8,12 @@ import sys
 from nmigen.back import rtlil
 from nmigen.hdl import Fragment
 
+if sys.version_info < (3, 8):
+    print("Python 3.8 or above is required")
+    sys.exit(1)
 
-def main(cls):
+
+def main(cls, filename="toplevel.il"):
     """Runs a file in simulate or generate mode.
 
     Add this to your file:
@@ -27,14 +31,16 @@ def main(cls):
         to toplevel.il. You can then formally verify using
         sby -f <file.sby>.
     """
-    if len(sys.argv) != 2 or (sys.argv[1] != "sim" and sys.argv[1] != "gen"):
+
+    if len(sys.argv) < 2 or (sys.argv[1] != "sim" and sys.argv[1] != "gen"):
         print(f"Usage: python {sys.argv[0]} sim|gen")
         sys.exit(1)
+
     if sys.argv[1] == "sim":
         cls.sim()
     else:
         design, ports = cls.formal()
         fragment = Fragment.get(design, None)
         output = rtlil.convert(fragment, ports=ports)
-        with open("toplevel.il", "w") as f:
+        with open(filename, "w") as f:
             f.write(output)

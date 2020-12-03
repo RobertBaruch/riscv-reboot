@@ -72,8 +72,10 @@ class SequencerCard(Elaboratable):
         # Raised when the instruction is illegal. We also
         # halt the processor when one is encountered.
         self.illegal = Signal(reset=0)
-        # Raied on the last phase of an instruction.
+        # Raised on the last phase of an instruction.
         self.instr_complete = Signal(reset=0)
+        # How does this work?
+        self.ext_interrupt = Signal()
 
         # Buses, bidirectional
         self.data_x_in = Signal(32)
@@ -139,6 +141,7 @@ class SequencerCard(Elaboratable):
         self._pc_plus_4_to_pc = Signal()
         self._z_to_pc = Signal()
         self._x_to_pc = Signal()
+        self._memaddr_to_pc = Signal()
 
         # -> memaddr
         self._pc_plus_4_to_memaddr = Signal()
@@ -173,6 +176,7 @@ class SequencerCard(Elaboratable):
             self._pc_plus_4_to_pc.eq(0),
             self._x_to_pc.eq(0),
             self._z_to_pc.eq(0),
+            self._memaddr_to_pc.eq(0),
             self._pc_plus_4_to_memaddr.eq(0),
             self._x_to_memaddr.eq(0),
             self._z_to_memaddr.eq(0),
@@ -197,7 +201,7 @@ class SequencerCard(Elaboratable):
 
         with m.If(self._is_last_instr_cycle):
             m.d.comb += self.instr_complete.eq(self.mcycle_end)
-            with m.If(~self._x_to_pc & ~self._z_to_pc):
+            with m.If(~self._x_to_pc & ~self._z_to_pc & ~self._memaddr_to_pc):
                 m.d.comb += self._pc_plus_4_to_pc.eq(1)
             with m.If(~self._x_to_memaddr & ~self._z_to_memaddr):
                 m.d.comb += self._pc_plus_4_to_memaddr.eq(1)
@@ -224,6 +228,16 @@ class SequencerCard(Elaboratable):
                 m.d.ph1 += self._pc.eq(self.data_x_in)
             with m.Elif(self._z_to_pc):
                 m.d.ph1 += self._pc.eq(self.data_z_in)
+            with m.Elif(self._memaddr_to_pc):
+                # This is the result of a JAL or JALR instruction.
+                # See the comment on JAL for why this is okay to do.
+                m.d.ph1 += self._pc[1:].eq(self.memaddr[1:])
+                m.d.ph1 += self._pc[0].eq(0)
+
+            # Because we don't support the C (compressed instructions)
+            # extension, the PC must be 32-bit aligned.
+            with m.If(self._pc[0:2] != 0):
+                m.d.ph2 += self.illegal.eq(1)
 
             with m.If(self._pc_plus_4_to_memaddr):
                 m.d.ph1 += self.memaddr.eq(self._pc_plus_4)
@@ -260,37 +274,42 @@ class SequencerCard(Elaboratable):
         ]
         self.decode_imm(m)
 
-        # Output control signals
-        with m.Switch(self._opcode):
-            with m.Case(OPCODE_LUI):
-                self.handle_lui(m)
+        with m.If(self._instr[:16] == 0):
+            m.d.ph2 += self.illegal.eq(1)
+        with m.Elif(self._instr == 0xFFFFFFFF):
+            m.d.ph2 += self.illegal.eq(1)
+        with m.Else():
+            # Output control signals
+            with m.Switch(self._opcode):
+                with m.Case(OPCODE_LUI):
+                    self.handle_lui(m)
 
-            with m.Case(OPCODE_AUIPC):
-                self.handle_auipc(m)
+                with m.Case(OPCODE_AUIPC):
+                    self.handle_auipc(m)
 
-            with m.Case(OPCODE_OP_IMM):
-                self.handle_op_imm(m)
+                with m.Case(OPCODE_OP_IMM):
+                    self.handle_op_imm(m)
 
-            with m.Case(OPCODE_OP):
-                self.handle_op(m)
+                with m.Case(OPCODE_OP):
+                    self.handle_op(m)
 
-            with m.Case(OPCODE_JAL):
-                self.handle_jal(m)
+                with m.Case(OPCODE_JAL):
+                    self.handle_jal(m)
 
-            with m.Case(OPCODE_JALR):
-                self.handle_jalr(m)
+                with m.Case(OPCODE_JALR):
+                    self.handle_jalr(m)
 
-            with m.Case(OPCODE_BRANCH):
-                self.handle_branch(m)
+                with m.Case(OPCODE_BRANCH):
+                    self.handle_branch(m)
 
-            with m.Case(OPCODE_LOAD):
-                self.handle_load(m)
+                with m.Case(OPCODE_LOAD):
+                    self.handle_load(m)
 
-            with m.Case(OPCODE_STORE):
-                self.handle_store(m)
+                with m.Case(OPCODE_STORE):
+                    self.handle_store(m)
 
-            with m.Default():
-                m.d.ph2 += self.illegal.eq(1)
+                with m.Default():
+                    m.d.comb += self._is_last_instr_cycle.eq(1)
 
         return m
 
@@ -451,19 +470,21 @@ class SequencerCard(Elaboratable):
     def handle_jal(self, m: Module):
         """Adds the JAL logic to the given module.
 
-        rd <- PC + 4
-        PC <- PC + imm
+        rd <- PC + 4, PC <- PC + imm
 
         PC      -> X
         imm     -> Y
         ALU ADD -> Z
-        Z       -> rd
+        Z       -> memaddr
         ---------------------
-        rd      -> X
         PC + 4  -> Z
         Z       -> rd
-        X       -> PC
-        X       -> memaddr
+        memaddr -> PC   # This will zero the least significant bit
+
+        Note that because the immediate value for JAL has its least
+        significant bit set to zero by definition, and the PC is also
+        assumed to be aligned, there is no loss in generality to clear
+        the least significant bit when transferring memaddr to PC.
         """
         m.d.comb += self._imm_format.eq(OpcodeFormat.J)
 
@@ -473,39 +494,31 @@ class SequencerCard(Elaboratable):
                 self._imm_to_y.eq(1),
                 self.alu_op.eq(AluOp.ADD),
                 self.alu_to_z.eq(1),
-                self.z_to_reg.eq(1),
-                self.z_reg.eq(self._rd),
+                self._z_to_memaddr.eq(1),
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
             m.d.comb += [
-                self.reg_to_x.eq(1),
-                self.x_reg.eq(self._rd),
-                self._x_to_pc.eq(1),
-                self._x_to_memaddr.eq(1),
                 self._pc_plus_4_to_z.eq(1),
                 self.z_to_reg.eq(1),
                 self.z_reg.eq(self._rd),
+                self._memaddr_to_pc.eq(1),
             ]
             m.d.comb += self._is_last_instr_cycle.eq(1)
 
     def handle_jalr(self, m: Module):
         """Adds the JALR logic to the given module.
 
-        In French, J'ailler means "I go".
-
-        rd <- PC + 4, PC <- rs1 + imm
+        rd <- PC + 4, PC <- (rs1 + imm) & 0xFFFFFFFE
 
         rs1     -> X
         imm     -> Y
         ALU ADD -> Z
-        Z       -> rd
+        Z       -> memaddr
         ---------------------
-        rd      -> X
         PC + 4  -> Z
         Z       -> rd
-        X       -> PC
-        X       -> memaddr
+        memaddr -> PC  # This will zero the least significant bit
         """
         m.d.comb += self._imm_format.eq(OpcodeFormat.J)
 
@@ -516,19 +529,15 @@ class SequencerCard(Elaboratable):
                 self._imm_to_y.eq(1),
                 self.alu_op.eq(AluOp.ADD),
                 self.alu_to_z.eq(1),
-                self.z_to_reg.eq(1),
-                self.z_reg.eq(self._rd),
+                self._z_to_memaddr.eq(1),
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
             m.d.comb += [
-                self.reg_to_x.eq(1),
-                self.x_reg.eq(self._rd),
-                self._x_to_pc.eq(1),
-                self._x_to_memaddr.eq(1),
                 self._pc_plus_4_to_z.eq(1),
                 self.z_to_reg.eq(1),
                 self.z_reg.eq(self._rd),
+                self._memaddr_to_pc.eq(1),
             ]
             m.d.comb += self._is_last_instr_cycle.eq(1)
 
@@ -714,9 +723,6 @@ class SequencerCard(Elaboratable):
                         with m.Default():
                             m.d.ph2 += self.illegal.eq(1)
 
-                with m.Default():
-                    m.d.ph2 += self.illegal.eq(1)
-
         with m.Else():
             m.d.comb += [
                 self.reg_to_x.eq(1),
@@ -753,8 +759,6 @@ class SequencerCard(Elaboratable):
                         self._shamt.eq(0),
                         self.alu_op.eq(AluOp.SRL),
                     ]
-                with m.Default():
-                    m.d.ph2 += self.illegal.eq(1)
 
             m.d.comb += self._is_last_instr_cycle.eq(1)
 
@@ -843,9 +847,6 @@ class SequencerCard(Elaboratable):
                             m.d.comb += self.mem_wr_mask.eq(0b1111)
                         with m.Default():
                             m.d.ph2 += self.illegal.eq(1)
-
-                with m.Default():
-                    m.d.ph2 += self.illegal.eq(1)
 
         with m.Else():
             m.d.comb += self._is_last_instr_cycle.eq(1)
