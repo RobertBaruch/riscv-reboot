@@ -3,41 +3,16 @@
 import sys
 from typing import List, Tuple
 
-from nmigen import Array, Signal, Module, Elaboratable, signed, ClockDomain, Mux, Repl
+from nmigen import Array, Signal, Module, Elaboratable, ClockDomain, Mux, Repl
 from nmigen.build import Platform
 from nmigen.asserts import Assert, Assume, Cover, Stable, Past, Initial, AnyConst
 
 from alu_card import AluCard
-from consts import AluOp, OpcodeFormat
+from consts import AluFunc, AluOp, BranchCond, MemAccessWidth, Opcode
 from reg_card import RegCard
 from sequencer_card import SequencerCard
 from shift_card import ShiftCard
 from util import main
-
-OPCODE_LOAD = 0b000_0011
-OPCODE_OP_IMM = 0b001_0011
-OPCODE_STORE = 0b010_0011
-OPCODE_OP = 0b011_0011
-OPCODE_BRANCH = 0b110_0011
-OPCODE_SYSTEM = 0b111_0011
-OPCODE_LUI = 0b011_0111
-OPCODE_JALR = 0b110_0111
-OPCODE_MISC_MEM = 0b000_1111
-OPCODE_AUIPC = 0b001_0111
-OPCODE_JAL = 0b110_1111
-
-BRANCH_EQ = 0b000
-BRANCH_NE = 0b001
-BRANCH_LT = 0b100
-BRANCH_GE = 0b101
-BRANCH_LTU = 0b110
-BRANCH_GEU = 0b111
-
-LOAD_STORE_B = 0b000
-LOAD_STORE_H = 0b001
-LOAD_STORE_W = 0b010
-LOAD_STORE_BU = 0b100
-LOAD_STORE_HU = 0b101
 
 mode = ""
 
@@ -168,14 +143,14 @@ class FormalCPU(Elaboratable):
         opcode = instr[:7]
         with m.Switch(opcode):
             # Taken straight from the RISC-V Unprivileged ISA spec.
-            with m.Case(OPCODE_LUI, OPCODE_AUIPC):
+            with m.Case(Opcode.LUI, Opcode.AUIPC):
                 # Format U
                 m.d.comb += [
                     imm[12:].eq(instr[12:]),
                     imm[0:12].eq(0),
                 ]
 
-            with m.Case(OPCODE_OP_IMM, OPCODE_LOAD):
+            with m.Case(Opcode.OP_IMM, Opcode.LOAD):
                 # Format I
                 m.d.comb += [
                     imm[11:].eq(Repl(instr[31], 32)),
@@ -184,11 +159,11 @@ class FormalCPU(Elaboratable):
                     imm[0].eq(instr[20]),
                 ]
 
-            with m.Case(OPCODE_OP):
+            with m.Case(Opcode.OP):
                 # Format R
                 m.d.comb += imm.eq(0)
 
-            with m.Case(OPCODE_JAL, OPCODE_JALR):
+            with m.Case(Opcode.JAL, Opcode.JALR):
                 # Format J
                 m.d.comb += [
                     imm[20:].eq(Repl(instr[31], 32)),
@@ -199,7 +174,7 @@ class FormalCPU(Elaboratable):
                     imm[0].eq(0),
                 ]
 
-            with m.Case(OPCODE_BRANCH):
+            with m.Case(Opcode.BRANCH):
                 # Format B
                 m.d.comb += [
                     imm[12:].eq(Repl(instr[31], 32)),
@@ -209,7 +184,7 @@ class FormalCPU(Elaboratable):
                     imm[0].eq(0),
                 ]
 
-            with m.Case(OPCODE_STORE):
+            with m.Case(Opcode.STORE):
                 # Format S
                 m.d.comb += [
                     imm[11:].eq(Repl(instr[31], 32)),
@@ -240,7 +215,7 @@ class FormalCPU(Elaboratable):
             self.rd = Signal(5)
             self.funct3 = Signal(3)
             self.funct7 = Signal(7)
-            self.alu_op = Signal(AluOp)
+            self.alu_func = Signal(AluFunc)
             self.did_mem_rd = Signal()
             self.did_mem_wr = Signal()
             self.memaddr_accessed = Signal(32)
@@ -255,8 +230,8 @@ class FormalCPU(Elaboratable):
                 self.rd.eq(self.instr[7:12]),
                 self.funct3.eq(self.instr[12:15]),
                 self.funct7.eq(self.instr[25:]),
-                self.alu_op[3].eq(self.funct7[5]),
-                self.alu_op[0:3].eq(self.funct3),
+                self.alu_func[3].eq(self.funct7[5]),
+                self.alu_func[0:3].eq(self.funct3),
             ]
             self.imm = FormalCPU.decode_imm(m, self.instr)
 
@@ -369,26 +344,26 @@ class FormalCPU(Elaboratable):
             if mode != "op":
                 return
             arg = self.get_before_reg(m, self.rs2)
-            with m.Switch(self.alu_op):
-                with m.Case(AluOp.ADD):
+            with m.Switch(self.alu_func):
+                with m.Case(AluFunc.ADD):
                     self.verify_add(m, arg)
-                with m.Case(AluOp.SUB):
+                with m.Case(AluFunc.SUB):
                     self.verify_sub(m, arg)
-                with m.Case(AluOp.AND):
+                with m.Case(AluFunc.AND):
                     self.verify_and(m, arg)
-                with m.Case(AluOp.OR):
+                with m.Case(AluFunc.OR):
                     self.verify_or(m, arg)
-                with m.Case(AluOp.XOR):
+                with m.Case(AluFunc.XOR):
                     self.verify_xor(m, arg)
-                with m.Case(AluOp.SLTU):
+                with m.Case(AluFunc.SLTU):
                     self.verify_sltu(m, arg)
-                with m.Case(AluOp.SLT):
+                with m.Case(AluFunc.SLT):
                     self.verify_slt(m, arg)
-                with m.Case(AluOp.SLL):
+                with m.Case(AluFunc.SLL):
                     self.verify_sll(m, arg)
-                with m.Case(AluOp.SRL):
+                with m.Case(AluFunc.SRL):
                     self.verify_srl(m, arg)
-                with m.Case(AluOp.SRA):
+                with m.Case(AluFunc.SRA):
                     self.verify_sra(m, arg)
                 # No default case: it is okay to have UB (undefined/unspecified behavior)
                 # when executing an instruction that is not implemented, that is,
@@ -398,24 +373,24 @@ class FormalCPU(Elaboratable):
             if mode != "op_imm":
                 return
             arg = self.imm
-            with m.Switch(self.alu_op):
-                with m.Case(AluOp.ADD):
+            with m.Switch(self.alu_func):
+                with m.Case(AluFunc.ADD):
                     self.verify_add(m, arg)
-                with m.Case(AluOp.AND):
+                with m.Case(AluFunc.AND):
                     self.verify_and(m, arg)
-                with m.Case(AluOp.OR):
+                with m.Case(AluFunc.OR):
                     self.verify_or(m, arg)
-                with m.Case(AluOp.XOR):
+                with m.Case(AluFunc.XOR):
                     self.verify_xor(m, arg)
-                with m.Case(AluOp.SLTU):
+                with m.Case(AluFunc.SLTU):
                     self.verify_sltu(m, arg)
-                with m.Case(AluOp.SLT):
+                with m.Case(AluFunc.SLT):
                     self.verify_slt(m, arg)
-                with m.Case(AluOp.SLL):
+                with m.Case(AluFunc.SLL):
                     self.verify_sll(m, arg)
-                with m.Case(AluOp.SRL):
+                with m.Case(AluFunc.SRL):
                     self.verify_srl(m, arg)
-                with m.Case(AluOp.SRA):
+                with m.Case(AluFunc.SRA):
                     self.verify_sra(m, arg)
                 # No default case: it is okay to have UB (undefined/unspecified behavior)
                 # when executing an instruction that is not implemented, that is,
@@ -483,23 +458,23 @@ class FormalCPU(Elaboratable):
             self.verify_regs_same_except(m, 0)
             m.d.comb += Assert(~self.did_mem_rd & ~self.did_mem_wr)
             with m.Switch(self.funct3):
-                with m.Case(BRANCH_EQ):
+                with m.Case(BranchCond.EQ):
                     expected_target = Mux(rs1 == rs2, target_if, target_else)
                     m.d.comb += Assert(self.pc_after == expected_target)
-                with m.Case(BRANCH_NE):
+                with m.Case(BranchCond.NE):
                     expected_target = Mux(rs1 != rs2, target_if, target_else)
                     m.d.comb += Assert(self.pc_after == expected_target)
-                with m.Case(BRANCH_LTU):
+                with m.Case(BranchCond.LTU):
                     expected_target = Mux(rs1 < rs2, target_if, target_else)
                     m.d.comb += Assert(self.pc_after == expected_target)
-                with m.Case(BRANCH_LT):
+                with m.Case(BranchCond.LT):
                     expected_target = Mux(
                         rs1.as_signed() < rs2.as_signed(), target_if, target_else)
                     m.d.comb += Assert(self.pc_after == expected_target)
-                with m.Case(BRANCH_GEU):
+                with m.Case(BranchCond.GEU):
                     expected_target = Mux(rs1 >= rs2, target_if, target_else)
                     m.d.comb += Assert(self.pc_after == expected_target)
-                with m.Case(BRANCH_GE):
+                with m.Case(BranchCond.GE):
                     expected_target = Mux(
                         rs1.as_signed() >= rs2.as_signed(), target_if, target_else)
                     m.d.comb += Assert(self.pc_after == expected_target)
@@ -632,15 +607,15 @@ class FormalCPU(Elaboratable):
 
         def verify_opcode_LOAD(self, m: Module):
             with m.Switch(self.funct3):
-                with m.Case(LOAD_STORE_BU):
+                with m.Case(MemAccessWidth.BU):
                     self.verify_LBU(m)
-                with m.Case(LOAD_STORE_B):
+                with m.Case(MemAccessWidth.B):
                     self.verify_LB(m)
-                with m.Case(LOAD_STORE_HU):
+                with m.Case(MemAccessWidth.HU):
                     self.verify_LHU(m)
-                with m.Case(LOAD_STORE_H):
+                with m.Case(MemAccessWidth.H):
                     self.verify_LH(m)
-                with m.Case(LOAD_STORE_W):
+                with m.Case(MemAccessWidth.W):
                     self.verify_LW(m)
 
         def verify_SB(self, m: Module):
@@ -707,30 +682,30 @@ class FormalCPU(Elaboratable):
 
         def verify_opcode_STORE(self, m: Module):
             with m.Switch(self.funct3):
-                with m.Case(LOAD_STORE_B):
+                with m.Case(MemAccessWidth.B):
                     self.verify_SB(m)
-                with m.Case(LOAD_STORE_H):
+                with m.Case(MemAccessWidth.H):
                     self.verify_SH(m)
-                with m.Case(LOAD_STORE_W):
+                with m.Case(MemAccessWidth.W):
                     self.verify_SW(m)
 
         def verify_instr(self, m: Module):
             with m.Switch(self.opcode):
-                with m.Case(OPCODE_OP):
+                with m.Case(Opcode.OP):
                     self.verify_opcode_OP(m)
-                with m.Case(OPCODE_OP_IMM):
+                with m.Case(Opcode.OP_IMM):
                     self.verify_opcode_OP_IMM(m)
-                with m.Case(OPCODE_LUI):
+                with m.Case(Opcode.LUI):
                     self.verify_opcode_LUI(m)
-                with m.Case(OPCODE_AUIPC):
+                with m.Case(Opcode.AUIPC):
                     self.verify_opcode_AUIPC(m)
-                with m.Case(OPCODE_JAL):
+                with m.Case(Opcode.JAL):
                     self.verify_opcode_JAL(m)
-                with m.Case(OPCODE_JALR):
+                with m.Case(Opcode.JALR):
                     self.verify_opcode_JALR(m)
-                with m.Case(OPCODE_BRANCH):
+                with m.Case(Opcode.BRANCH):
                     self.verify_opcode_BRANCH(m)
-                with m.Case(OPCODE_LOAD):
+                with m.Case(Opcode.LOAD):
                     self.verify_opcode_LOAD(m)
                 # No default case: it is okay to have UB (undefined/unspecified behavior)
                 # when executing an instruction that is not implemented, that is,
@@ -757,19 +732,19 @@ class FormalCPU(Elaboratable):
             m.d.comb += is_ones_instr.eq(self.instr == 0xFFFFFFFF)
 
             m.d.comb += is_misaligned_load.eq(0)
-            with m.If(self.did_mem_rd & (self.opcode == OPCODE_LOAD)):
+            with m.If(self.did_mem_rd & (self.opcode == Opcode.LOAD)):
                 with m.Switch(self.funct3):
-                    with m.Case(LOAD_STORE_H, LOAD_STORE_HU):
+                    with m.Case(MemAccessWidth.H, MemAccessWidth.HU):
                         m.d.comb += is_misaligned_load.eq(addr[0] != 0)
-                    with m.Case(LOAD_STORE_W):
+                    with m.Case(MemAccessWidth.W):
                         m.d.comb += is_misaligned_load.eq(addr[0:2] != 0)
 
             m.d.comb += is_misaligned_store.eq(0)
-            with m.If(self.did_mem_wr & (self.opcode == OPCODE_STORE)):
+            with m.If(self.did_mem_wr & (self.opcode == Opcode.STORE)):
                 with m.Switch(self.funct3):
-                    with m.Case(LOAD_STORE_H, LOAD_STORE_HU):
+                    with m.Case(MemAccessWidth.H, MemAccessWidth.HU):
                         m.d.comb += is_misaligned_store.eq(addr[0] != 0)
-                    with m.Case(LOAD_STORE_W):
+                    with m.Case(MemAccessWidth.W):
                         m.d.comb += is_misaligned_store.eq(addr[0:2] != 0)
 
             m.d.comb += is_pc_misaligned.eq(self.pc_after[0:2] != 0)
@@ -941,31 +916,31 @@ class FormalCPU(Elaboratable):
             "sw": 3,
         }
         opcodes = {
-            "op": OPCODE_OP,
-            "op_imm": OPCODE_OP_IMM,
-            "lui": OPCODE_LUI,
-            "auipc": OPCODE_AUIPC,
-            "jal": OPCODE_JAL,
-            "jalr": OPCODE_JALR,
-            "branch": OPCODE_BRANCH,
-            "lb": OPCODE_LOAD,
-            "lbu": OPCODE_LOAD,
-            "lh": OPCODE_LOAD,
-            "lhu": OPCODE_LOAD,
-            "lw": OPCODE_LOAD,
-            "sb": OPCODE_STORE,
-            "sh": OPCODE_STORE,
-            "sw": OPCODE_STORE,
+            "op": Opcode.OP,
+            "op_imm": Opcode.OP_IMM,
+            "lui": Opcode.LUI,
+            "auipc": Opcode.AUIPC,
+            "jal": Opcode.JAL,
+            "jalr": Opcode.JALR,
+            "branch": Opcode.BRANCH,
+            "lb": Opcode.LOAD,
+            "lbu": Opcode.LOAD,
+            "lh": Opcode.LOAD,
+            "lhu": Opcode.LOAD,
+            "lw": Opcode.LOAD,
+            "sb": Opcode.STORE,
+            "sh": Opcode.STORE,
+            "sw": Opcode.STORE,
         }
         widths = {
-            "lb": LOAD_STORE_B,
-            "lbu": LOAD_STORE_BU,
-            "lh": LOAD_STORE_H,
-            "lhu": LOAD_STORE_HU,
-            "lw": LOAD_STORE_W,
-            "sb": LOAD_STORE_B,
-            "sh": LOAD_STORE_H,
-            "sw": LOAD_STORE_W,
+            "lb": MemAccessWidth.B,
+            "lbu": MemAccessWidth.BU,
+            "lh": MemAccessWidth.H,
+            "lhu": MemAccessWidth.HU,
+            "lw": MemAccessWidth.W,
+            "sb": MemAccessWidth.B,
+            "sh": MemAccessWidth.H,
+            "sw": MemAccessWidth.W,
         }
         if mode in cycles:
             with m.If(phase_count == 5):
