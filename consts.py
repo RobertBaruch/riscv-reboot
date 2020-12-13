@@ -35,6 +35,7 @@ class OpcodeFormat(Enum):
     S = 3
     B = 4
     J = 5
+    CSR = 6
 
 
 @unique
@@ -72,6 +73,9 @@ class AluOp(Enum):
     SRA = 0b1000
     OR = 0b1001
     AND = 0b1010
+    X = 0b1011
+    Y = 0b1100
+    AND_NOT = 0b1101
 
 
 @unique
@@ -87,3 +91,14 @@ class AluFunc(Enum):
     SRA = 0b1101
     OR = 0b0110
     AND = 0b0111
+
+
+@unique
+class SystemFunc(Enum):
+    """System opcode functions."""
+    CSRRW = 0b001
+    CSRRS = 0b010
+    CSRRC = 0b011
+    CSRRWI = 0b101
+    CSRRSI = 0b110
+    CSRRCI = 0b111

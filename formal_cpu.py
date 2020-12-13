@@ -8,7 +8,7 @@ from nmigen.build import Platform
 from nmigen.asserts import Assert, Assume, Cover, Stable, Past, Initial, AnyConst
 
 from alu_card import AluCard
-from consts import AluFunc, AluOp, BranchCond, MemAccessWidth, Opcode
+from consts import AluFunc, AluOp, BranchCond, MemAccessWidth, Opcode, SystemFunc
 from reg_card import RegCard
 from sequencer_card import SequencerCard
 from shift_card import ShiftCard
@@ -21,16 +21,37 @@ class FormalCPU(Elaboratable):
     """Formal verification for the CPU."""
 
     def __init__(self):
+        # CPU bus
         self.mcycle_end = Signal()
         self.illegal = Signal()
         self.instr_complete = Signal()
+        self.x_bus = Signal(32)
+        self.y_bus = Signal(32)
+        self.z_bus = Signal(32)
+        self.alu_op = Signal(AluOp)
+        self.alu_to_z = Signal()
+        self.x_reg = Signal(5)
+        self.y_reg = Signal(5)
+        self.z_reg = Signal(5)
+        self.reg_to_x = Signal()
+        self.reg_to_y = Signal()
+        self.alu_eq = Signal()
+        self.alu_lt = Signal()
+        self.alu_ltu = Signal()
+        self.csr_num = Signal(12)
+        self.csr_to_x = Signal()
+        self.z_to_csr = Signal()
 
+        # Memory bus
         self.mem_rd = Signal()
         self.mem_wr = Signal()
         self.mem_wr_mask = Signal(4)
         self.memaddr = Signal(32)
         self.memdata_rd = Signal(32)
         self.memdata_wr = Signal(32)
+
+        # Formal verification fake CSR read value
+        self.csr_rd_data = Signal(32)
 
         self.regs = RegCard()
         self.alu = AluCard()
@@ -46,72 +67,59 @@ class FormalCPU(Elaboratable):
         m.submodules.shifter = self.shifter
         m.submodules.sequencer = self.seq
 
-        x_bus = Signal(32)
-        y_bus = Signal(32)
-        z_bus = Signal(32)
+        # Faking a CSR card
+        _csr_data_x_out = Signal(32)
+        m.d.comb += _csr_data_x_out.eq(Mux(self.csr_to_x, self.csr_rd_data, 0))
 
         # Hook up the buses
         m.d.comb += [
-            self.alu.data_x.eq(x_bus),
-            self.alu.data_y.eq(y_bus),
+            self.alu.data_x.eq(self.x_bus),
+            self.alu.data_y.eq(self.y_bus),
 
-            self.shifter.data_x.eq(x_bus),
-            self.shifter.data_y.eq(y_bus),
+            self.shifter.data_x.eq(self.x_bus),
+            self.shifter.data_y.eq(self.y_bus),
 
-            self.regs.data_z.eq(z_bus),
+            self.regs.data_z.eq(self.z_bus),
 
-            self.seq.data_x_in.eq(x_bus),
-            self.seq.data_y_in.eq(y_bus),
-            self.seq.data_z_in.eq(z_bus),
+            self.seq.data_x_in.eq(self.x_bus),
+            self.seq.data_y_in.eq(self.y_bus),
+            self.seq.data_z_in.eq(self.z_bus),
 
-            x_bus.eq(self.seq.data_x_out | self.regs.data_x),
-            y_bus.eq(self.seq.data_y_out | self.regs.data_y),
-            z_bus.eq(self.alu.data_z | self.shifter.data_z |
-                     self.seq.data_z_out),
+            self.x_bus.eq(self.seq.data_x_out |
+                          self.regs.data_x | _csr_data_x_out),
+            self.y_bus.eq(self.seq.data_y_out | self.regs.data_y),
+            self.z_bus.eq(self.alu.data_z | self.shifter.data_z |
+                          self.seq.data_z_out),
         ]
-
-        alu_op = Signal(AluOp)
-        alu_to_z = Signal()
-        x_reg = Signal(5)
-        y_reg = Signal(5)
-        z_reg = Signal(5)
-        reg_to_x = Signal()
-        reg_to_y = Signal()
-        z_to_reg = Signal()
-        alu_eq = Signal()
-        alu_lt = Signal()
-        alu_ltu = Signal()
 
         # Hook up the control lines
         m.d.comb += [
-            self.alu.alu_op.eq(alu_op),
-            self.shifter.alu_op.eq(alu_op),
-            alu_op.eq(self.seq.alu_op),
+            self.alu.alu_op.eq(self.alu_op),
+            self.shifter.alu_op.eq(self.alu_op),
+            self.alu_op.eq(self.seq.alu_op_to_z),
 
-            self.alu.alu_to_z.eq(alu_to_z),
-            self.shifter.alu_to_z.eq(alu_to_z),
-            alu_to_z.eq(self.seq.alu_to_z),
+            self.alu_eq.eq(self.alu.alu_eq),
+            self.alu_lt.eq(self.alu.alu_lt),
+            self.alu_ltu.eq(self.alu.alu_ltu),
+            self.seq.alu_eq.eq(self.alu_eq),
+            self.seq.alu_lt.eq(self.alu_lt),
+            self.seq.alu_ltu.eq(self.alu_ltu),
 
-            alu_eq.eq(self.alu.alu_eq),
-            alu_lt.eq(self.alu.alu_lt),
-            alu_ltu.eq(self.alu.alu_ltu),
-            self.seq.alu_eq.eq(alu_eq),
-            self.seq.alu_lt.eq(alu_lt),
-            self.seq.alu_ltu.eq(alu_ltu),
+            self.regs.reg_x.eq(self.x_reg),
+            self.regs.reg_y.eq(self.y_reg),
+            self.regs.reg_z.eq(self.z_reg),
+            self.x_reg.eq(self.seq.x_reg),
+            self.y_reg.eq(self.seq.y_reg),
+            self.z_reg.eq(self.seq.z_reg),
 
-            self.regs.reg_x.eq(x_reg),
-            self.regs.reg_y.eq(y_reg),
-            self.regs.reg_z.eq(z_reg),
-            x_reg.eq(self.seq.x_reg),
-            y_reg.eq(self.seq.y_reg),
-            z_reg.eq(self.seq.z_reg),
+            self.regs.reg_to_x.eq(self.reg_to_x),
+            self.regs.reg_to_y.eq(self.reg_to_y),
+            self.reg_to_x.eq(self.seq.reg_to_x),
+            self.reg_to_y.eq(self.seq.reg_to_y),
 
-            self.regs.reg_to_x.eq(reg_to_x),
-            self.regs.reg_to_y.eq(reg_to_y),
-            self.regs.z_to_reg.eq(z_to_reg),
-            reg_to_x.eq(self.seq.reg_to_x),
-            reg_to_y.eq(self.seq.reg_to_y),
-            z_to_reg.eq(self.seq.z_to_reg),
+            self.csr_num.eq(self.seq.csr_num),
+            self.csr_to_x.eq(self.seq.csr_to_x),
+            self.z_to_csr.eq(self.seq.z_to_csr),
         ]
 
         # Clock line
@@ -193,6 +201,12 @@ class FormalCPU(Elaboratable):
                     imm[0].eq(instr[7]),
                 ]
 
+            with m.Case(Opcode.SYSTEM):
+                m.d.comb += [
+                    imm[5:].eq(0),
+                    imm[0:5].eq(instr[15:]),
+                ]
+
             with m.Default():
                 m.d.comb += imm.eq(0)
 
@@ -209,6 +223,8 @@ class FormalCPU(Elaboratable):
             self.pc_before = Signal(32, reset_less=True, reset=0)
             self.pc_after = Signal(32)
             self.instr = Signal(32)
+
+            # Instr decode data
             self.opcode = Signal(7)
             self.rs1 = Signal(5)
             self.rs2 = Signal(5)
@@ -216,12 +232,20 @@ class FormalCPU(Elaboratable):
             self.funct3 = Signal(3)
             self.funct7 = Signal(7)
             self.alu_func = Signal(AluFunc)
+            self.csr_num = Signal(12)
+
+            # Captured access data
             self.did_mem_rd = Signal()
             self.did_mem_wr = Signal()
             self.memaddr_accessed = Signal(32)
             self.mem_rd_data = Signal(32)
             self.mem_wr_data = Signal(32)
             self.mem_wr_mask = Signal(4)
+            self.csr_accessed = Signal(12)
+            self.did_csr_rd = Signal()
+            self.did_csr_wr = Signal()
+            self.csr_rd_data = Signal(32)
+            self.csr_wr_data = Signal(32)
 
             m.d.comb += [
                 self.opcode.eq(self.instr[:7]),
@@ -232,6 +256,7 @@ class FormalCPU(Elaboratable):
                 self.funct7.eq(self.instr[25:]),
                 self.alu_func[3].eq(self.funct7[5]),
                 self.alu_func[0:3].eq(self.funct3),
+                self.csr_num.eq(self.instr[20:]),
             ]
             self.imm = FormalCPU.decode_imm(m, self.instr)
 
@@ -689,6 +714,122 @@ class FormalCPU(Elaboratable):
                 with m.Case(MemAccessWidth.W):
                     self.verify_SW(m)
 
+        def verify_CSRRW(self, m: Module):
+            if mode != "csr":
+                return
+            m.d.comb += Assert(self.pc_after == (self.pc_before+4)[:32])
+            m.d.comb += Assert(~self.did_mem_rd & ~self.did_mem_wr)
+            self.verify_regs_same_except(m, self.rd)
+            rs1 = self.get_before_reg(m, self.rs1)
+            rd = self.regs_after[self.rd]
+
+            m.d.comb += Assert(self.did_csr_rd == (self.rd != 0))
+            m.d.comb += Assert(self.did_csr_wr)
+            m.d.comb += Assert(self.csr_accessed == self.csr_num)
+            with m.If(self.did_csr_rd):
+                m.d.comb += Assert(rd == self.csr_rd_data)
+            m.d.comb += Assert(self.csr_wr_data == rs1)
+
+        def verify_CSRRWI(self, m: Module):
+            if mode != "csr":
+                return
+            m.d.comb += Assert(self.pc_after == (self.pc_before+4)[:32])
+            m.d.comb += Assert(~self.did_mem_rd & ~self.did_mem_wr)
+            self.verify_regs_same_except(m, self.rd)
+            rd = self.regs_after[self.rd]
+
+            m.d.comb += Assert(self.did_csr_rd == (self.rd != 0))
+            m.d.comb += Assert(self.did_csr_wr)
+            m.d.comb += Assert(self.csr_accessed == self.csr_num)
+            with m.If(self.did_csr_rd):
+                m.d.comb += Assert(rd == self.csr_rd_data)
+            m.d.comb += Assert(self.csr_wr_data == self.imm)
+
+        def verify_CSRRS(self, m: Module):
+            if mode != "csr":
+                return
+            m.d.comb += Assert(self.pc_after == (self.pc_before+4)[:32])
+            m.d.comb += Assert(~self.did_mem_rd & ~self.did_mem_wr)
+            self.verify_regs_same_except(m, self.rd)
+            rs1 = self.get_before_reg(m, self.rs1)
+            rd = self.regs_after[self.rd]
+
+            m.d.comb += Assert(self.did_csr_wr == (self.rs1 != 0))
+            m.d.comb += Assert(self.did_csr_rd)
+            m.d.comb += Assert(self.csr_accessed == self.csr_num)
+            with m.If(self.rd != 0):
+                m.d.comb += Assert(rd == self.csr_rd_data)
+            with m.If(self.rs1 != 0):
+                m.d.comb += Assert(self.csr_wr_data ==
+                                   (rs1 | self.csr_rd_data))
+
+        def verify_CSRRSI(self, m: Module):
+            if mode != "csr":
+                return
+            m.d.comb += Assert(self.pc_after == (self.pc_before+4)[:32])
+            m.d.comb += Assert(~self.did_mem_rd & ~self.did_mem_wr)
+            self.verify_regs_same_except(m, self.rd)
+            rd = self.regs_after[self.rd]
+
+            m.d.comb += Assert(self.did_csr_wr == (self.imm != 0))
+            m.d.comb += Assert(self.did_csr_rd)
+            m.d.comb += Assert(self.csr_accessed == self.csr_num)
+            with m.If(self.rd != 0):
+                m.d.comb += Assert(rd == self.csr_rd_data)
+            with m.If(self.imm != 0):
+                m.d.comb += Assert(self.csr_wr_data ==
+                                   (self.imm | self.csr_rd_data))
+
+        def verify_CSRRC(self, m: Module):
+            if mode != "csr":
+                return
+            m.d.comb += Assert(self.pc_after == (self.pc_before+4)[:32])
+            m.d.comb += Assert(~self.did_mem_rd & ~self.did_mem_wr)
+            self.verify_regs_same_except(m, self.rd)
+            rs1 = self.get_before_reg(m, self.rs1)
+            rd = self.regs_after[self.rd]
+
+            m.d.comb += Assert(self.did_csr_wr == (self.rs1 != 0))
+            m.d.comb += Assert(self.did_csr_rd)
+            m.d.comb += Assert(self.csr_accessed == self.csr_num)
+            with m.If(self.rd != 0):
+                m.d.comb += Assert(rd == self.csr_rd_data)
+            with m.If(self.rs1 != 0):
+                m.d.comb += Assert(self.csr_wr_data ==
+                                   (self.csr_rd_data & ~rs1))
+
+        def verify_CSRRCI(self, m: Module):
+            if mode != "csr":
+                return
+            m.d.comb += Assert(self.pc_after == (self.pc_before+4)[:32])
+            m.d.comb += Assert(~self.did_mem_rd & ~self.did_mem_wr)
+            self.verify_regs_same_except(m, self.rd)
+            rd = self.regs_after[self.rd]
+
+            m.d.comb += Assert(self.did_csr_wr == (self.imm != 0))
+            m.d.comb += Assert(self.did_csr_rd)
+            m.d.comb += Assert(self.csr_accessed == self.csr_num)
+            with m.If(self.rd != 0):
+                m.d.comb += Assert(rd == self.csr_rd_data)
+            with m.If(self.imm != 0):
+                m.d.comb += Assert(self.csr_wr_data ==
+                                   (self.csr_rd_data & ~self.imm))
+
+        def verify_opcode_SYSTEM(self, m: Module):
+            with m.Switch(self.funct3):
+                with m.Case(SystemFunc.CSRRW):
+                    self.verify_CSRRW(m)
+                with m.Case(SystemFunc.CSRRWI):
+                    self.verify_CSRRWI(m)
+                with m.Case(SystemFunc.CSRRS):
+                    self.verify_CSRRS(m)
+                with m.Case(SystemFunc.CSRRSI):
+                    self.verify_CSRRSI(m)
+                with m.Case(SystemFunc.CSRRC):
+                    self.verify_CSRRC(m)
+                with m.Case(SystemFunc.CSRRCI):
+                    self.verify_CSRRCI(m)
+
         def verify_instr(self, m: Module):
             with m.Switch(self.opcode):
                 with m.Case(Opcode.OP):
@@ -707,6 +848,8 @@ class FormalCPU(Elaboratable):
                     self.verify_opcode_BRANCH(m)
                 with m.Case(Opcode.LOAD):
                     self.verify_opcode_LOAD(m)
+                with m.Case(Opcode.SYSTEM):
+                    self.verify_opcode_SYSTEM(m)
                 # No default case: it is okay to have UB (undefined/unspecified behavior)
                 # when executing an instruction that is not implemented, that is,
                 # not part of the extension you claim to support.
@@ -826,9 +969,10 @@ class FormalCPU(Elaboratable):
                     Assume(data.regs_before[i] == init_regs[i]),
                 ]
 
-        # Assume memory is stable
+        # Assume memory and CSR data is stable
         with m.If(phase_count > 1):
             m.d.comb += Assume(Stable(cpu.memdata_rd))
+            m.d.comb += Assume(Stable(cpu.csr_rd_data))
 
         # Store the instruction we're working on, and take a snapshot
         # of the registers.
@@ -837,8 +981,12 @@ class FormalCPU(Elaboratable):
             m.d.ph2 += data.pc_before.eq(cpu.seq._pc)
             for i in range(1, 32):
                 m.d.ph2 += data.regs_before[i].eq(cpu.regs._x_bank._mem[i])
-            m.d.ph2 += data.did_mem_rd.eq(0)
-            m.d.ph2 += data.did_mem_wr.eq(0)
+            m.d.ph2 += [
+                data.did_mem_rd.eq(0),
+                data.did_mem_wr.eq(0),
+                data.did_csr_rd.eq(0),
+                data.did_csr_wr.eq(0),
+            ]
 
         for i in range(1, 32):
             m.d.comb += data.regs_after[i].eq(cpu.regs._x_bank._mem[i])
@@ -864,6 +1012,20 @@ class FormalCPU(Elaboratable):
             m.d.ph2 += data.memaddr_accessed.eq(cpu.memaddr)
             m.d.ph2 += data.mem_wr_data.eq(cpu.memdata_wr)
             m.d.ph2 += data.mem_wr_mask.eq(cpu.mem_wr_mask)
+
+        with m.If((mcycle == 0) & (cpu.z_to_csr | cpu.csr_to_x) & (phase_count == 1) & ~cpu.illegal):
+            m.d.ph2 += [
+                data.did_csr_rd.eq(cpu.csr_to_x),
+                data.did_csr_wr.eq(cpu.z_to_csr),
+                data.csr_accessed.eq(cpu.csr_num),
+                data.csr_rd_data.eq(cpu.x_bus),
+                data.csr_wr_data.eq(cpu.z_bus),
+            ]
+
+        # Past cycle 0, we neither read nor write a CSR
+        with m.If((mcycle > 0) & ~cpu.illegal):
+            m.d.comb += Assert(~cpu.z_to_csr)
+            m.d.comb += Assert(~cpu.csr_to_x)
 
         # Can't read and write at the same time
         m.d.comb += Assert(~(cpu.mem_rd & cpu.mem_wr))
@@ -892,6 +1054,9 @@ class FormalCPU(Elaboratable):
             m.d.comb += Assert(Stable(cpu.seq.alu_eq))
             m.d.comb += Assert(Stable(cpu.seq.alu_lt))
             m.d.comb += Assert(Stable(cpu.seq.alu_ltu))
+            m.d.comb += Assert(Stable(cpu.seq.csr_num))
+            m.d.comb += Assert(Stable(cpu.seq.csr_to_x))
+            m.d.comb += Assert(Stable(cpu.seq.z_to_csr))
         with m.If(mcycle > 0):
             m.d.comb += Assert(Stable(cpu.seq._instr))
         with m.If(phase_count > 0):
@@ -906,6 +1071,7 @@ class FormalCPU(Elaboratable):
             "jal": 2,
             "jalr": 2,
             "branch": 2,
+            "csr": 2,
             "lb": 3,
             "lbu": 3,
             "lh": 3,
@@ -923,6 +1089,7 @@ class FormalCPU(Elaboratable):
             "jal": Opcode.JAL,
             "jalr": Opcode.JALR,
             "branch": Opcode.BRANCH,
+            "csr": Opcode.SYSTEM,
             "lb": Opcode.LOAD,
             "lbu": Opcode.LOAD,
             "lh": Opcode.LOAD,
@@ -958,7 +1125,6 @@ class FormalCPU(Elaboratable):
                 m.d.comb += Assume(data.opcode == opcodes[mode])
             # Formal verification just after we've completed an instruction.
             with m.If(Past(cpu.instr_complete)):
-                # m.d.comb += Assert(data.pc_after == (data.pc_before+4)[:32])
                 data.verify_instr(m)
 
         if mode == "ill":
@@ -979,7 +1145,7 @@ class FormalCPU(Elaboratable):
                     Assert(Stable(cpu.mem_rd)),
                 ]
 
-        return m, [cpu.memdata_rd]
+        return m, [cpu.memdata_rd, cpu.csr_rd_data]
 
 
 if __name__ == "__main__":

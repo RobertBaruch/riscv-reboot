@@ -21,14 +21,14 @@ class RegCard(Elaboratable):
         data_z: The Z bus, always read from.
         reg_to_x: The control line indicating we want to output a register to X.
         reg_to_y: The control line indicating we want to output a register to Y.
-        z_to_reg: The control line indicating we want to write a register from Z.
         reg_x: The register to output to X.
         reg_y: The register to output to Y.
         reg_z: The register to write from Z.
 
     The card optionally outputs the data in reg_x to the data_x bus,
-    and the data in reg_y to the data_y bus. It also optionally
-    writes the data on the data_z bus to reg_z.
+    and the data in reg_y to the data_y bus. It also writes the data
+    on the data_z bus to reg_z. Of course, reg_z should be zero if you
+    don't really want to write anything.
 
     This module uses two system-wide clocks: ph1 and ph2. The phases look
     like this:
@@ -52,7 +52,6 @@ class RegCard(Elaboratable):
     data_z: Signal
     reg_to_x: Signal
     reg_to_y: Signal
-    z_to_reg: Signal
     reg_x: Signal
     reg_y: Signal
     reg_z: Signal
@@ -67,7 +66,6 @@ class RegCard(Elaboratable):
         # Controls
         self.reg_to_x = Signal()
         self.reg_to_y = Signal()
-        self.z_to_reg = Signal()
         self.reg_x = Signal(5)
         self.reg_y = Signal(5)
         self.reg_z = Signal(5)
@@ -121,11 +119,8 @@ class RegCard(Elaboratable):
             y_bank.n_wr.eq(n_wr),
         ]
 
-        # If we want to write, then pass through the write pulse to
-        # the memory banks.
-        m.d.comb += n_wr.eq(1)
-        with m.If(self.z_to_reg):
-            m.d.comb += n_wr.eq(write_pulse)
+        # Pass through the write pulse to the memory banks.
+        m.d.comb += n_wr.eq(write_pulse)
 
         # We also read from the memories on ph1, but only if we're
         # not reading from register 0. Strictly speaking this doesn't
@@ -245,7 +240,6 @@ class RegCard(Elaboratable):
                 Assume(Stable(regs.reg_z)),
                 Assume(Stable(regs.reg_to_x)),
                 Assume(Stable(regs.reg_to_y)),
-                Assume(Stable(regs.z_to_reg)),
                 Assume(Stable(regs.data_z)),
             ]
 
@@ -278,7 +272,7 @@ class RegCard(Elaboratable):
         m.d.comb += write_pulse.eq(phase_count != 4)
 
         # On write, the data should have been written to both banks.
-        with m.If(Rose(write_pulse) & regs.z_to_reg):
+        with m.If(Rose(write_pulse)):
             m.d.comb += Assert(regs._x_bank._mem[Past(regs.reg_z)]
                                == Past(regs.data_z))
             m.d.comb += Assert(regs._y_bank._mem[Past(regs.reg_z)]
@@ -302,7 +296,7 @@ class RegCard(Elaboratable):
             stored_y_data.eq(regs._y_bank._mem[check_addr]),
         ]
 
-        with m.If(regs.z_to_reg & (regs.reg_z == check_addr)):
+        with m.If(regs.reg_z == check_addr):
             m.d.write_pulse_domain += saved_data.eq(regs.data_z)
 
         with m.If(Initial()):
@@ -312,7 +306,7 @@ class RegCard(Elaboratable):
             m.d.comb += Assert(saved_data == stored_x_data)
             m.d.comb += Assert(saved_data == stored_y_data)
 
-        return m, [regs.data_z, regs.reg_to_x, regs.reg_to_y, regs.z_to_reg,
+        return m, [regs.data_z, regs.reg_to_x, regs.reg_to_y,
                    regs.reg_x, regs.reg_y, regs.reg_z, ph1.clk, ph2.clk, saved_data,
                    stored_x_data, stored_y_data]
 

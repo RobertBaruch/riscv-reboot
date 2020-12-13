@@ -6,7 +6,7 @@ from nmigen import Signal, Module, Elaboratable, signed, ClockSignal, ClockDomai
 from nmigen.build import Platform
 from nmigen.asserts import Assert, Assume, Cover, Stable, Past
 
-from consts import AluOp, AluFunc, BranchCond, MemAccessWidth, Opcode, OpcodeFormat
+from consts import AluOp, AluFunc, BranchCond, MemAccessWidth, Opcode, OpcodeFormat, SystemFunc
 from transparent_latch import TransparentLatch
 from util import main
 
@@ -32,14 +32,11 @@ class SequencerCard(Elaboratable):
         # cycle (i.e. phase 5, the very end of the write phase).
         self.mcycle_end = Signal()
 
-        # Control signals. 28 by my count, which includes
-        # alu_to_z, x_to_reg, and y_to_reg.
-        self.alu_op = Signal(AluOp)  # 4 bits
+        # Control signals.
         self.alu_eq = Signal()
         self.alu_lt = Signal()
         self.alu_ltu = Signal()
 
-        self.z_to_reg = Signal()
         self.x_reg = Signal(5)
         self.y_reg = Signal(5)
         self.z_reg = Signal(5)
@@ -49,8 +46,11 @@ class SequencerCard(Elaboratable):
         self.illegal = Signal(reset=0)
         # Raised on the last phase of an instruction.
         self.instr_complete = Signal(reset=0)
-        # How does this work?
-        self.ext_interrupt = Signal()
+
+        # CSR lines
+        self.csr_num = Signal(12)
+        self.csr_to_x = Signal()
+        self.z_to_csr = Signal()
 
         # Buses, bidirectional
         self.data_x_in = Signal(32)
@@ -88,6 +88,7 @@ class SequencerCard(Elaboratable):
         self._stored_alu_lt = Signal()
         self._stored_alu_ltu = Signal()
         self._is_last_instr_cycle = Signal()
+        self._tmp = Signal(32)
 
         self._opcode = Signal(7)
         self._rs1 = Signal(5)
@@ -110,14 +111,18 @@ class SequencerCard(Elaboratable):
         self._shamt_to_y = Signal()
 
         # -> Z
-        self.alu_to_z = Signal()
         self._pc_plus_4_to_z = Signal()
+        self._tmp_to_z = Signal()
+        self.alu_op_to_z = Signal(AluOp)  # 4 bits
 
         # -> PC
         self._pc_plus_4_to_pc = Signal()
         self._z_to_pc = Signal()
         self._x_to_pc = Signal()
         self._memaddr_to_pc = Signal()
+
+        # -> tmp
+        self._x_to_tmp = Signal()
 
         # -> memaddr
         self._pc_plus_4_to_memaddr = Signal()
@@ -147,13 +152,14 @@ class SequencerCard(Elaboratable):
             self.reg_to_y.eq(0),
             self._imm_to_y.eq(0),
             self._shamt_to_y.eq(0),
-            self.alu_op.eq(AluOp.NONE),
-            self.alu_to_z.eq(0),
+            self.alu_op_to_z.eq(AluOp.NONE),
             self._pc_plus_4_to_z.eq(0),
+            self._tmp_to_z.eq(0),
             self._pc_plus_4_to_pc.eq(0),
             self._x_to_pc.eq(0),
             self._z_to_pc.eq(0),
             self._memaddr_to_pc.eq(0),
+            self._x_to_tmp.eq(0),
             self._pc_plus_4_to_memaddr.eq(0),
             self._x_to_memaddr.eq(0),
             self._z_to_memaddr.eq(0),
@@ -168,6 +174,9 @@ class SequencerCard(Elaboratable):
             self.data_z_out.eq(0),
             self._is_last_instr_cycle.eq(0),
             self.instr_complete.eq(0),
+            self.csr_to_x.eq(0),
+            self.z_to_csr.eq(0),
+            self.z_reg.eq(0),
         ]
         m.d.ph2 += self.illegal.eq(0)
         m.d.comb += self._pc_plus_4.eq(self._pc + 4)
@@ -226,6 +235,9 @@ class SequencerCard(Elaboratable):
             with m.If(self._z_to_memdata):
                 m.d.ph1 += self.memdata_wr.eq(self.data_z_in)
 
+            with m.If(self._x_to_tmp):
+                m.d.ph1 += self._tmp.eq(self.data_x_in)
+
         # Updates to multiplexers
         with m.If(self._pc_to_x):
             m.d.comb += self.data_x_out.eq(self._pc)
@@ -239,6 +251,8 @@ class SequencerCard(Elaboratable):
 
         with m.If(self._pc_plus_4_to_z):
             m.d.comb += self.data_z_out.eq(self._pc_plus_4)
+        with m.Elif(self._tmp_to_z):
+            m.d.comb += self.data_z_out.eq(self._tmp)
 
         # Decode instruction
         m.d.comb += [
@@ -250,6 +264,7 @@ class SequencerCard(Elaboratable):
             self._funct7.eq(self._instr[25:]),
             self._alu_func[:3].eq(self._funct3),
             self._alu_func[3].eq(self._funct7[5]),
+            self.csr_num.eq(self._instr[20:]),
         ]
         self.decode_imm(m)
 
@@ -286,6 +301,9 @@ class SequencerCard(Elaboratable):
 
                 with m.Case(Opcode.STORE):
                     self.handle_store(m)
+
+                with m.Case(Opcode.SYSTEM):
+                    self.handle_system(m)
 
                 with m.Default():
                     m.d.comb += self._is_last_instr_cycle.eq(1)
@@ -344,6 +362,12 @@ class SequencerCard(Elaboratable):
                     self._imm.eq(tmp),
                 ]
 
+            with m.Case(OpcodeFormat.CSR):
+                m.d.comb += [
+                    self._imm[0:5].eq(self._instr[15:]),
+                    self._imm[5:].eq(0),
+                ]
+
     def handle_lui(self, m: Module):
         """Adds the LUI logic to the given module.
 
@@ -362,9 +386,7 @@ class SequencerCard(Elaboratable):
             self.reg_to_x.eq(1),
             self.x_reg.eq(0),
             self._imm_to_y.eq(1),
-            self.alu_op.eq(AluOp.ADD),
-            self.alu_to_z.eq(1),
-            self.z_to_reg.eq(1),
+            self.alu_op_to_z.eq(AluOp.ADD),
             self.z_reg.eq(self._rd),
         ]
         m.d.comb += self._is_last_instr_cycle.eq(1)
@@ -386,9 +408,7 @@ class SequencerCard(Elaboratable):
             self._imm_format.eq(OpcodeFormat.U),
             self._pc_to_x.eq(1),
             self._imm_to_y.eq(1),
-            self.alu_op.eq(AluOp.ADD),
-            self.alu_to_z.eq(1),
-            self.z_to_reg.eq(1),
+            self.alu_op_to_z.eq(AluOp.ADD),
             self.z_reg.eq(self._rd),
         ]
         m.d.comb += self._is_last_instr_cycle.eq(1)
@@ -411,31 +431,29 @@ class SequencerCard(Elaboratable):
             self.reg_to_x.eq(1),
             self.x_reg.eq(self._rs1),
             self._imm_to_y.eq(1),
-            self.alu_to_z.eq(1),
-            self.z_to_reg.eq(1),
             self.z_reg.eq(self._rd),
         ]
         with m.Switch(self._alu_func):
             with m.Case(AluFunc.ADD):
-                m.d.comb += self.alu_op.eq(AluOp.ADD)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.ADD)
             with m.Case(AluFunc.SUB):
-                m.d.comb += self.alu_op.eq(AluOp.SUB)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SUB)
             with m.Case(AluFunc.SLL):
-                m.d.comb += self.alu_op.eq(AluOp.SLL)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SLL)
             with m.Case(AluFunc.SLT):
-                m.d.comb += self.alu_op.eq(AluOp.SLT)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SLT)
             with m.Case(AluFunc.SLTU):
-                m.d.comb += self.alu_op.eq(AluOp.SLTU)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SLTU)
             with m.Case(AluFunc.XOR):
-                m.d.comb += self.alu_op.eq(AluOp.XOR)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.XOR)
             with m.Case(AluFunc.SRL):
-                m.d.comb += self.alu_op.eq(AluOp.SRL)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SRL)
             with m.Case(AluFunc.SRA):
-                m.d.comb += self.alu_op.eq(AluOp.SRA)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SRA)
             with m.Case(AluFunc.OR):
-                m.d.comb += self.alu_op.eq(AluOp.OR)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.OR)
             with m.Case(AluFunc.AND):
-                m.d.comb += self.alu_op.eq(AluOp.AND)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.AND)
         m.d.comb += self._is_last_instr_cycle.eq(1)
 
     def handle_op(self, m: Module):
@@ -457,31 +475,29 @@ class SequencerCard(Elaboratable):
             self.x_reg.eq(self._rs1),
             self.reg_to_y.eq(1),
             self.y_reg.eq(self._rs2),
-            self.alu_to_z.eq(1),
-            self.z_to_reg.eq(1),
             self.z_reg.eq(self._rd),
         ]
         with m.Switch(self._alu_func):
             with m.Case(AluFunc.ADD):
-                m.d.comb += self.alu_op.eq(AluOp.ADD)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.ADD)
             with m.Case(AluFunc.SUB):
-                m.d.comb += self.alu_op.eq(AluOp.SUB)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SUB)
             with m.Case(AluFunc.SLL):
-                m.d.comb += self.alu_op.eq(AluOp.SLL)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SLL)
             with m.Case(AluFunc.SLT):
-                m.d.comb += self.alu_op.eq(AluOp.SLT)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SLT)
             with m.Case(AluFunc.SLTU):
-                m.d.comb += self.alu_op.eq(AluOp.SLTU)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SLTU)
             with m.Case(AluFunc.XOR):
-                m.d.comb += self.alu_op.eq(AluOp.XOR)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.XOR)
             with m.Case(AluFunc.SRL):
-                m.d.comb += self.alu_op.eq(AluOp.SRL)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SRL)
             with m.Case(AluFunc.SRA):
-                m.d.comb += self.alu_op.eq(AluOp.SRA)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.SRA)
             with m.Case(AluFunc.OR):
-                m.d.comb += self.alu_op.eq(AluOp.OR)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.OR)
             with m.Case(AluFunc.AND):
-                m.d.comb += self.alu_op.eq(AluOp.AND)
+                m.d.comb += self.alu_op_to_z.eq(AluOp.AND)
         m.d.comb += self._is_last_instr_cycle.eq(1)
 
     def handle_jal(self, m: Module):
@@ -509,15 +525,13 @@ class SequencerCard(Elaboratable):
             m.d.comb += [
                 self._pc_to_x.eq(1),
                 self._imm_to_y.eq(1),
-                self.alu_op.eq(AluOp.ADD),
-                self.alu_to_z.eq(1),
+                self.alu_op_to_z.eq(AluOp.ADD),
                 self._z_to_memaddr.eq(1),
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
             m.d.comb += [
                 self._pc_plus_4_to_z.eq(1),
-                self.z_to_reg.eq(1),
                 self.z_reg.eq(self._rd),
                 self._memaddr_to_pc.eq(1),
             ]
@@ -544,15 +558,13 @@ class SequencerCard(Elaboratable):
                 self.reg_to_x.eq(1),
                 self.x_reg.eq(self._rs1),
                 self._imm_to_y.eq(1),
-                self.alu_op.eq(AluOp.ADD),
-                self.alu_to_z.eq(1),
+                self.alu_op_to_z.eq(AluOp.ADD),
                 self._z_to_memaddr.eq(1),
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
             m.d.comb += [
                 self._pc_plus_4_to_z.eq(1),
-                self.z_to_reg.eq(1),
                 self.z_reg.eq(self._rd),
                 self._memaddr_to_pc.eq(1),
             ]
@@ -588,8 +600,7 @@ class SequencerCard(Elaboratable):
                 self.x_reg.eq(self._rs1),
                 self.reg_to_y.eq(1),
                 self.y_reg.eq(self._rs2),
-                self.alu_op.eq(AluOp.SUB),
-                self.alu_to_z.eq(1),
+                self.alu_op_to_z.eq(AluOp.SUB),
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
@@ -612,8 +623,7 @@ class SequencerCard(Elaboratable):
                 m.d.comb += [
                     self._pc_to_x.eq(1),
                     self._imm_to_y.eq(1),
-                    self.alu_op.eq(AluOp.ADD),
-                    self.alu_to_z.eq(1),
+                    self.alu_op_to_z.eq(AluOp.ADD),
                     self._z_to_pc.eq(1),
                     self._z_to_memaddr.eq(1),
                 ]
@@ -693,8 +703,7 @@ class SequencerCard(Elaboratable):
                 self.reg_to_x.eq(1),
                 self.x_reg.eq(self._rs1),
                 self._imm_to_y.eq(1),
-                self.alu_op.eq(AluOp.ADD),
-                self.alu_to_z.eq(1),
+                self.alu_op_to_z.eq(AluOp.ADD),
                 self._z_to_memaddr.eq(1),
                 self._next_instr_phase.eq(1),
             ]
@@ -704,9 +713,7 @@ class SequencerCard(Elaboratable):
                 self.mem_rd.eq(1),
                 self._memdata_to_x.eq(1),
                 self._shamt_to_y.eq(1),
-                self.alu_op.eq(AluOp.SLL),
-                self.alu_to_z.eq(1),
-                self.z_to_reg.eq(1),
+                self.alu_op_to_z.eq(AluOp.SLL),
                 self.z_reg.eq(self._rd),
                 self._next_instr_phase.eq(2),
             ]
@@ -745,8 +752,6 @@ class SequencerCard(Elaboratable):
                 self.reg_to_x.eq(1),
                 self.x_reg.eq(self._rd),
                 self._shamt_to_y.eq(1),
-                self.alu_to_z.eq(1),
-                self.z_to_reg.eq(1),
                 self.z_reg.eq(self._rd),
             ]
 
@@ -754,27 +759,27 @@ class SequencerCard(Elaboratable):
                 with m.Case(MemAccessWidth.B):
                     m.d.comb += [
                         self._shamt.eq(24),
-                        self.alu_op.eq(AluOp.SRA),
+                        self.alu_op_to_z.eq(AluOp.SRA),
                     ]
                 with m.Case(MemAccessWidth.BU):
                     m.d.comb += [
                         self._shamt.eq(24),
-                        self.alu_op.eq(AluOp.SRL),
+                        self.alu_op_to_z.eq(AluOp.SRL),
                     ]
                 with m.Case(MemAccessWidth.H):
                     m.d.comb += [
                         self._shamt.eq(16),
-                        self.alu_op.eq(AluOp.SRA),
+                        self.alu_op_to_z.eq(AluOp.SRA),
                     ]
                 with m.Case(MemAccessWidth.HU):
                     m.d.comb += [
                         self._shamt.eq(16),
-                        self.alu_op.eq(AluOp.SRL),
+                        self.alu_op_to_z.eq(AluOp.SRL),
                     ]
                 with m.Case(MemAccessWidth.W):
                     m.d.comb += [
                         self._shamt.eq(0),
-                        self.alu_op.eq(AluOp.SRL),
+                        self.alu_op_to_z.eq(AluOp.SRL),
                     ]
 
             m.d.comb += self._is_last_instr_cycle.eq(1)
@@ -812,8 +817,7 @@ class SequencerCard(Elaboratable):
                 self.reg_to_x.eq(1),
                 self.x_reg.eq(self._rs1),
                 self._imm_to_y.eq(1),
-                self.alu_op.eq(AluOp.ADD),
-                self.alu_to_z.eq(1),
+                self.alu_op_to_z.eq(AluOp.ADD),
                 self._z_to_memaddr.eq(1),
                 self._next_instr_phase.eq(1),
             ]
@@ -823,7 +827,7 @@ class SequencerCard(Elaboratable):
                 self.reg_to_x.eq(1),
                 self.x_reg.eq(self._rs2),
                 self._shamt_to_y.eq(1),
-                self.alu_op.eq(AluOp.SLL),
+                self.alu_op_to_z.eq(AluOp.SLL),
                 self._z_to_memdata.eq(1),
                 self.mem_wr.eq(1),
                 self._next_instr_phase.eq(2),
@@ -866,6 +870,165 @@ class SequencerCard(Elaboratable):
                             m.d.ph2 += self.illegal.eq(1)
 
         with m.Else():
+            m.d.comb += self._is_last_instr_cycle.eq(1)
+
+    def handle_system(self, m: Module):
+        """Adds the SYSTEM logic to the given module.
+
+        """
+        with m.Switch(self._funct3):
+            with m.Case(SystemFunc.CSRRW):
+                self.handle_CSRRW(m)
+            with m.Case(SystemFunc.CSRRWI):
+                self.handle_CSRRWI(m)
+            with m.Case(SystemFunc.CSRRS):
+                self.handle_CSRRS(m)
+            with m.Case(SystemFunc.CSRRSI):
+                self.handle_CSRRSI(m)
+            with m.Case(SystemFunc.CSRRC):
+                self.handle_CSRRC(m)
+            with m.Case(SystemFunc.CSRRCI):
+                self.handle_CSRRCI(m)
+            with m.Default():
+                m.d.comb += self._is_last_instr_cycle.eq(1)
+
+    def handle_CSRRW(self, m: Module):
+        m.d.comb += self._imm_format.eq(OpcodeFormat.CSR)
+
+        with m.If(self._instr_phase == 0):
+            with m.If(self._rd == 0):
+                m.d.comb += [
+                    self.x_reg.eq(0),
+                    self.reg_to_x.eq(1),
+                ]
+            with m.Else():
+                m.d.comb += [
+                    self.csr_to_x.eq(1)
+                ]
+            m.d.comb += [
+                self.y_reg.eq(self._rs1),
+                self.reg_to_y.eq(1),
+                self.alu_op_to_z.eq(AluOp.Y),
+                self.z_to_csr.eq(1),
+                self._x_to_tmp.eq(1),
+                self._next_instr_phase.eq(1),
+            ]
+
+        with m.Else():
+            m.d.comb += [
+                self._tmp_to_z.eq(1),
+                self.z_reg.eq(self._rd),
+            ]
+            m.d.comb += self._is_last_instr_cycle.eq(1)
+
+    def handle_CSRRWI(self, m: Module):
+        m.d.comb += self._imm_format.eq(OpcodeFormat.CSR)
+
+        with m.If(self._instr_phase == 0):
+            with m.If(self._rd == 0):
+                m.d.comb += [
+                    self.x_reg.eq(0),
+                    self.reg_to_x.eq(1),
+                ]
+            with m.Else():
+                m.d.comb += [
+                    self.csr_to_x.eq(1)
+                ]
+            m.d.comb += [
+                self._imm_to_y.eq(1),
+                self.alu_op_to_z.eq(AluOp.Y),
+                self.z_to_csr.eq(1),
+                self._x_to_tmp.eq(1),
+                self._next_instr_phase.eq(1),
+            ]
+
+        with m.Else():
+            m.d.comb += [
+                self._tmp_to_z.eq(1),
+                self.z_reg.eq(self._rd),
+            ]
+            m.d.comb += self._is_last_instr_cycle.eq(1)
+
+    def handle_CSRRS(self, m: Module):
+        m.d.comb += self._imm_format.eq(OpcodeFormat.CSR)
+
+        with m.If(self._instr_phase == 0):
+            m.d.comb += [
+                self.csr_to_x.eq(1),
+                self.y_reg.eq(self._rs1),
+                self.reg_to_y.eq(1),
+                self.alu_op_to_z.eq(AluOp.OR),
+                self.z_to_csr.eq(self._rs1 != 0),
+                self._x_to_tmp.eq(1),
+                self._next_instr_phase.eq(1),
+            ]
+
+        with m.Else():
+            m.d.comb += [
+                self._tmp_to_z.eq(1),
+                self.z_reg.eq(self._rd),
+            ]
+            m.d.comb += self._is_last_instr_cycle.eq(1)
+
+    def handle_CSRRSI(self, m: Module):
+        m.d.comb += self._imm_format.eq(OpcodeFormat.CSR)
+
+        with m.If(self._instr_phase == 0):
+            m.d.comb += [
+                self.csr_to_x.eq(1),
+                self._imm_to_y.eq(1),
+                self.alu_op_to_z.eq(AluOp.OR),
+                self.z_to_csr.eq(self._imm != 0),
+                self._x_to_tmp.eq(1),
+                self._next_instr_phase.eq(1),
+            ]
+
+        with m.Else():
+            m.d.comb += [
+                self._tmp_to_z.eq(1),
+                self.z_reg.eq(self._rd),
+            ]
+            m.d.comb += self._is_last_instr_cycle.eq(1)
+
+    def handle_CSRRC(self, m: Module):
+        m.d.comb += self._imm_format.eq(OpcodeFormat.CSR)
+
+        with m.If(self._instr_phase == 0):
+            m.d.comb += [
+                self.csr_to_x.eq(1),
+                self.y_reg.eq(self._rs1),
+                self.reg_to_y.eq(1),
+                self.alu_op_to_z.eq(AluOp.AND_NOT),
+                self.z_to_csr.eq(self._rs1 != 0),
+                self._x_to_tmp.eq(1),
+                self._next_instr_phase.eq(1),
+            ]
+
+        with m.Else():
+            m.d.comb += [
+                self._tmp_to_z.eq(1),
+                self.z_reg.eq(self._rd),
+            ]
+            m.d.comb += self._is_last_instr_cycle.eq(1)
+
+    def handle_CSRRCI(self, m: Module):
+        m.d.comb += self._imm_format.eq(OpcodeFormat.CSR)
+
+        with m.If(self._instr_phase == 0):
+            m.d.comb += [
+                self.csr_to_x.eq(1),
+                self._imm_to_y.eq(1),
+                self.alu_op_to_z.eq(AluOp.AND_NOT),
+                self.z_to_csr.eq(self._imm != 0),
+                self._x_to_tmp.eq(1),
+                self._next_instr_phase.eq(1),
+            ]
+
+        with m.Else():
+            m.d.comb += [
+                self._tmp_to_z.eq(1),
+                self.z_reg.eq(self._rd),
+            ]
             m.d.comb += self._is_last_instr_cycle.eq(1)
 
     @classmethod
@@ -925,9 +1088,7 @@ class SequencerCard(Elaboratable):
                 Assert(Stable(seq.z_reg)),
                 Assert(Stable(seq.reg_to_x)),
                 Assert(Stable(seq.reg_to_y)),
-                Assert(Stable(seq.z_to_reg)),
-                Assert(Stable(seq.alu_op)),
-                Assert(Stable(seq.alu_to_z)),
+                Assert(Stable(seq.alu_op_to_z)),
 
                 Assert(Stable(seq.data_x_out)),
                 Assert(Stable(seq.data_y_out)),

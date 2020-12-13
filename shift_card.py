@@ -106,7 +106,6 @@ class ShiftCard(Elaboratable):
     data_x: Signal
     data_y: Signal
     data_z: Signal
-    alu_to_z: Signal
     alu_op: Signal
 
     def __init__(self):
@@ -116,7 +115,6 @@ class ShiftCard(Elaboratable):
         self.data_z = Signal(32)
 
         # Controls
-        self.alu_to_z = Signal()
         self.alu_op = Signal(AluOp)
 
     def elaborate(self, _: Platform) -> Module:
@@ -180,10 +178,11 @@ class ShiftCard(Elaboratable):
         m.d.comb += output_buffer.le.eq(1)
         m.d.comb += output_buffer.n_oe.eq(1)
 
-        with m.If(self.alu_to_z):
-            with m.Switch(self.alu_op):
-                with m.Case(AluOp.SLL, AluOp.SRL, AluOp.SRA):
-                    m.d.comb += output_buffer.n_oe.eq(0)
+        with m.Switch(self.alu_op):
+            with m.Case(AluOp.SLL, AluOp.SRL, AluOp.SRA):
+                m.d.comb += output_buffer.n_oe.eq(0)
+            with m.Default():
+                m.d.comb += output_buffer.n_oe.eq(1)
 
         return m
 
@@ -199,26 +198,23 @@ class ShiftCard(Elaboratable):
         with m.If(shamt > 0):
             m.d.comb += Cover(shifter.data_z == 0xFFFFAAA0)
 
-        with m.If(shifter.alu_to_z == 0):
-            m.d.comb += Assert(shifter.data_z == 0)
-        with m.Else():
-            with m.Switch(shifter.alu_op):
-                with m.Case(AluOp.SLL):
-                    m.d.comb += Assert(shifter.data_z ==
-                                       (shifter.data_x << shamt)[:32])
+        with m.Switch(shifter.alu_op):
+            with m.Case(AluOp.SLL):
+                m.d.comb += Assert(shifter.data_z ==
+                                   (shifter.data_x << shamt)[:32])
 
-                with m.Case(AluOp.SRL):
-                    m.d.comb += Assert(shifter.data_z ==
-                                       (shifter.data_x >> shamt))
+            with m.Case(AluOp.SRL):
+                m.d.comb += Assert(shifter.data_z ==
+                                   (shifter.data_x >> shamt))
 
-                with m.Case(AluOp.SRA):
-                    m.d.comb += Assert(shifter.data_z ==
-                                       (shifter.data_x.as_signed() >> shamt))
+            with m.Case(AluOp.SRA):
+                m.d.comb += Assert(shifter.data_z ==
+                                   (shifter.data_x.as_signed() >> shamt))
 
-                with m.Default():
-                    m.d.comb += Assert(shifter.data_z == 0)
+            with m.Default():
+                m.d.comb += Assert(shifter.data_z == 0)
 
-        return m, [shifter.alu_op, shifter.alu_to_z, shifter.data_x, shifter.data_y, shifter.data_z]
+        return m, [shifter.alu_op, shifter.data_x, shifter.data_y, shifter.data_z]
 
 
 if __name__ == "__main__":

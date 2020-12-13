@@ -1,14 +1,14 @@
 [tasks]
 --pycode-begin--
 for t in "bmc cover prove".split():
-  for o in "op op_imm lui auipc jal jalr branch lb lbu lh lhu lw sb sh sw ill".split():
+  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw ill".split():
     output(f"{o}-{t}")
 --pycode-end--
 
 [options]
 --pycode-begin--
 for t in "bmc cover prove".split():
-  for o in "op op_imm lui auipc jal jalr branch lb lbu lh lhu lw sb sh sw ill".split():
+  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw ill".split():
     output(f"{o}-{t}: mode {t}")
 --pycode-end--
 
@@ -22,7 +22,7 @@ if o in "op op_imm lui auipc".split():
     output(f"{o}-bmc: depth 7")
     output(f"{o}-cover: depth 24")
     output(f"{o}-prove: depth 6")
-elif o in "jal jalr branch".split():
+elif o in "jal jalr branch csr".split():
     output(f"{o}-bmc: depth 13")
     output(f"{o}-cover: depth 24")
     output(f"{o}-prove: depth 12")
