@@ -24,6 +24,7 @@ class RegCard(Elaboratable):
         reg_x: The register to output to X.
         reg_y: The register to output to Y.
         reg_z: The register to write from Z.
+        reg_page: The 32-register page to access.
 
     The card optionally outputs the data in reg_x to the data_x bus,
     and the data in reg_y to the data_y bus. It also writes the data
@@ -55,6 +56,7 @@ class RegCard(Elaboratable):
     reg_x: Signal
     reg_y: Signal
     reg_z: Signal
+    reg_page: Signal
 
     def __init__(self):
         """Constructs a register card."""
@@ -69,10 +71,11 @@ class RegCard(Elaboratable):
         self.reg_x = Signal(5)
         self.reg_y = Signal(5)
         self.reg_z = Signal(5)
+        self.reg_page = Signal()
 
         # Submodules
-        self._x_bank = AsyncMemory(width=32, addr_lines=5)
-        self._y_bank = AsyncMemory(width=32, addr_lines=5)
+        self._x_bank = AsyncMemory(width=32, addr_lines=6)
+        self._y_bank = AsyncMemory(width=32, addr_lines=6)
         self._x_latch = TransparentLatch(size=32)
         self._y_latch = TransparentLatch(size=32)
         self._x_bank_wr_latch = TransparentLatch(size=32)
@@ -135,11 +138,13 @@ class RegCard(Elaboratable):
 
         # The address for each bank is switched between x/y during the
         # read phase, and z during the write phase.
-        x_addr = Signal(5)
-        y_addr = Signal(5)
+        x_addr = Signal(6)
+        y_addr = Signal(6)
         m.d.comb += [
-            x_addr.eq(Mux(read_phase, self.reg_x, self.reg_z)),
-            y_addr.eq(Mux(read_phase, self.reg_y, self.reg_z)),
+            x_addr[:5].eq(Mux(read_phase, self.reg_x, self.reg_z)),
+            y_addr[:5].eq(Mux(read_phase, self.reg_y, self.reg_z)),
+            x_addr[5].eq(self.reg_page),
+            y_addr[5].eq(self.reg_page),
             x_bank.addr.eq(x_addr),
             y_bank.addr.eq(y_addr),
         ]
@@ -238,6 +243,7 @@ class RegCard(Elaboratable):
                 Assume(Stable(regs.reg_x)),
                 Assume(Stable(regs.reg_y)),
                 Assume(Stable(regs.reg_z)),
+                Assume(Stable(regs.reg_page)),
                 Assume(Stable(regs.reg_to_x)),
                 Assume(Stable(regs.reg_to_y)),
                 Assume(Stable(regs.data_z)),
@@ -272,16 +278,19 @@ class RegCard(Elaboratable):
         m.d.comb += write_pulse.eq(phase_count != 4)
 
         # On write, the data should have been written to both banks.
+        past_mem_addr = Signal(6)
+        m.d.comb += past_mem_addr[:5].eq(Past(regs.reg_z))
+        m.d.comb += past_mem_addr[5].eq(Past(regs.reg_page))
+        past_z = Past(regs.data_z)
         with m.If(Rose(write_pulse)):
-            m.d.comb += Assert(regs._x_bank._mem[Past(regs.reg_z)]
-                               == Past(regs.data_z))
-            m.d.comb += Assert(regs._y_bank._mem[Past(regs.reg_z)]
-                               == Past(regs.data_z))
+            m.d.comb += Assert(regs._x_bank._mem[past_mem_addr] == past_z)
+            m.d.comb += Assert(regs._y_bank._mem[past_mem_addr] == past_z)
 
         # Pick an register, any register, except 0. We assert that unless
         # it is written, its data will not change.
 
         check_addr = AnyConst(5)
+        check_page = AnyConst(1)
         saved_data = Signal(32)
         stored_x_data = Signal(32)
         stored_y_data = Signal(32)
@@ -290,13 +299,17 @@ class RegCard(Elaboratable):
         m.domains.write_pulse_domain = write_pulse_domain
         write_pulse_domain.clk = write_pulse
 
+        mem_addr = Signal(6)
+
         m.d.comb += Assume(check_addr != 0)
         m.d.comb += [
-            stored_x_data.eq(regs._x_bank._mem[check_addr]),
-            stored_y_data.eq(regs._y_bank._mem[check_addr]),
+            mem_addr[:5].eq(check_addr),
+            mem_addr[5].eq(check_page),
+            stored_x_data.eq(regs._x_bank._mem[mem_addr]),
+            stored_y_data.eq(regs._y_bank._mem[mem_addr]),
         ]
 
-        with m.If(regs.reg_z == check_addr):
+        with m.If((regs.reg_z == check_addr) & (regs.reg_page == check_page)):
             m.d.write_pulse_domain += saved_data.eq(regs.data_z)
 
         with m.If(Initial()):
@@ -307,7 +320,7 @@ class RegCard(Elaboratable):
             m.d.comb += Assert(saved_data == stored_y_data)
 
         return m, [regs.data_z, regs.reg_to_x, regs.reg_to_y,
-                   regs.reg_x, regs.reg_y, regs.reg_z, ph1.clk, ph2.clk, saved_data,
+                   regs.reg_x, regs.reg_y, regs.reg_z, regs.reg_page, ph1.clk, ph2.clk, saved_data,
                    stored_x_data, stored_y_data]
 
 

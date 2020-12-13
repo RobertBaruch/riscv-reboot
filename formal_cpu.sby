@@ -1,48 +1,53 @@
 [tasks]
+cover
 --pycode-begin--
-for t in "bmc cover prove".split():
-  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw ill".split():
+for t in "bmc prove".split():
+  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal irq".split():
     output(f"{o}-{t}")
 --pycode-end--
 
 [options]
 --pycode-begin--
-for t in "bmc cover prove".split():
-  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw ill".split():
+for t in "bmc prove".split():
+  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal irq".split():
     output(f"{o}-{t}: mode {t}")
 --pycode-end--
 
 multiclock on
+cover: mode cover
+cover: depth 50
 
 --pycode-begin--
-ts = task.split("-")
-o = ts[0]
-t = ts[1]
-if o in "op op_imm lui auipc".split():
-    output(f"{o}-bmc: depth 7")
-    output(f"{o}-cover: depth 24")
-    output(f"{o}-prove: depth 6")
-elif o in "jal jalr branch csr".split():
-    output(f"{o}-bmc: depth 13")
-    output(f"{o}-cover: depth 24")
-    output(f"{o}-prove: depth 12")
-elif o in "lb lbu lh lhu lw sb sh sw ill".split():
-    output(f"{o}-bmc: depth 19")
-    output(f"{o}-cover: depth 24")
-    output(f"{o}-prove: depth 18")
+if task != "cover":
+    ts = task.split("-")
+    o = ts[0]
+    t = ts[1]
+    if o in "op op_imm lui auipc".split():
+        output(f"{o}-bmc: depth 7")
+        output(f"{o}-prove: depth 6")
+    elif o in "jal jalr branch csr".split():
+        output(f"{o}-bmc: depth 13")
+        output(f"{o}-prove: depth 12")
+    elif o in "lb lbu lh lhu lw sb sh sw".split():
+        output(f"{o}-bmc: depth 19")
+        output(f"{o}-prove: depth 18")
+    elif o in "fatal irq".split():
+        output(f"{o}-bmc: depth 19")
+        output(f"{o}-prove: depth 20")
 --pycode-end--
 
 [engines]
+cover: smtbmc boolector
+
 --pycode-begin--
-ts = task.split("-")
-o = ts[0]
-t = ts[1]
-if t == "cover":
-  output(f"{task}: smtbmc boolector")
-elif t == "bmc":
-  output(f"{task}: smtbmc z3")
-else:
-  output(f"{task}: smtbmc z3")
+if task != "cover":
+  ts = task.split("-")
+  o = ts[0]
+  t = ts[1]
+  if t == "bmc":
+    output(f"{task}: smtbmc z3")
+  else:
+    output(f"{task}: smtbmc z3")
 --pycode-end--
 
 [script]
@@ -58,11 +63,14 @@ endmodule
 END
 design -stash dff2ff
 
+cover: read_ilang toplevel.il
+
 --pycode-begin--
-ts = task.split("-")
-o = ts[0]
-t = ts[1]
-output(f"{task}: read_ilang formal_cpu_{o}.il")
+if task != "cover":
+  ts = task.split("-")
+  o = ts[0]
+  t = ts[1]
+  output(f"{task}: read_ilang formal_cpu_{o}.il")
 --pycode-end--
 
 proc
@@ -70,9 +78,12 @@ techmap -map %dff2ff top/w:clk %co
 prep -top top
 
 [files]
+cover: toplevel.il
+
 --pycode-begin--
-ts = task.split("-")
-o = ts[0]
-t = ts[1]
-output(f"{task}: formal_cpu_{o}.il")
+if task != "cover":
+  ts = task.split("-")
+  o = ts[0]
+  t = ts[1]
+  output(f"{task}: formal_cpu_{o}.il")
 --pycode-end--
