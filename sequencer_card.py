@@ -48,7 +48,12 @@ class SequencerState:
         self._reg_ext_irq = Signal()
 
         # Trap handling
+        # Goes high when we are handling a trap condition,
+        # but not yet in the trap routine. See _trap_svc.
         self.trap = Signal()
+        # Whether we're in a trap routine.
+        self._trap_svc = Signal()
+
         # Raised when an exception occurs.
         self._exception = Signal()
         self._trap_cause = Signal(32)  # Written to _mcause on ph2
@@ -59,9 +64,6 @@ class SequencerState:
         self._mtval = Signal(32)
         # Starts with interrupts disabled
         self._mstatus = Signal(32)
-
-        # Whether we're servicing a trap
-        self._trap_svc = Signal()
 
 
 class SequencerCard(Elaboratable):
@@ -245,14 +247,34 @@ class SequencerCard(Elaboratable):
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
 
         # Latch the time and ext irqs. This cues them up for handling
-        # when we're about to load an instruction (but not in a trap routine).
+        # when we're about to load an instruction (but not in a trap routine,
+        # and not if interrupts are disabled).
+        #
         # These get reset once the trap handler runs.
         #
+        # TODO: Determine if disabling interrupts clearing
+        # pending interrupts is correct.
+        #
+        # TODO: What happens if an interrupt routine re-enables MIE?
+        # That seems like a bad idea because there's no such thing as
+        # a nested interrupt. I guess you get what you deserve? Or couldn't
+        # we just say that within an interrupt, enabling interrupts has no
+        # effect? Or allows interrupts to go pending? The code as written
+        # allows the interrupt to go pending.
+        #
+        # I think this is why knowing whether we're in a trap routine is
+        # important. This is self.state._trap_svc.
+        #
         # The time irq always has higher priority than the ext irq.
-        with m.If(~self.state._reg_time_irq & ~self.state.trap):
-            m.d.ph1 += self.state._reg_time_irq.eq(self.time_irq)
-        with m.If(~self.state._reg_ext_irq & ~self.state.trap):
-            m.d.ph1 += self.state._reg_ext_irq.eq(self.ext_irq)
+        with m.If(~self.state.trap):
+            with m.If(self.state._mstatus[MStatus.MIE]):
+                with m.If(~self.state._reg_time_irq):
+                    m.d.ph1 += self.state._reg_time_irq.eq(self.time_irq)
+                with m.If(~self.state._reg_ext_irq):
+                    m.d.ph1 += self.state._reg_ext_irq.eq(self.ext_irq)
+            with m.Else():
+                m.d.ph1 += self.state._reg_time_irq.eq(0)
+                m.d.ph1 += self.state._reg_ext_irq.eq(0)
 
         with m.If(self._is_last_instr_cycle):
             m.d.comb += self.instr_complete.eq(self.mcycle_end)

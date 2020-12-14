@@ -11,7 +11,8 @@ from nmigen.build import Platform
 from nmigen.asserts import Assert, Assume, Cover, Stable, Past, Initial, AnyConst, Rose
 
 from alu_card import AluCard
-from consts import AluFunc, AluOp, BranchCond, CSRAddr, MemAccessWidth, Opcode, SystemFunc, TrapCause
+from consts import AluFunc, AluOp, BranchCond, CSRAddr, MemAccessWidth, Opcode
+from consts import SystemFunc, TrapCause, MStatus
 from reg_card import RegCard
 from sequencer_card import SequencerCard, SequencerState
 from shift_card import ShiftCard
@@ -776,6 +777,8 @@ class FormalCPU(Elaboratable):
                     m.d.comb += Assert(self.csr_wr_data == self.state._mepc)
                 with m.Case(CSRAddr.MTVAL):
                     m.d.comb += Assert(self.csr_wr_data == self.state._mtval)
+                with m.Case(CSRAddr.MSTATUS):
+                    m.d.comb += Assert(self.csr_wr_data == self.state._mstatus)
 
         def verify_seq_csr_read(self, m: Module):
             with m.Switch(self.csr_accessed):
@@ -791,6 +794,9 @@ class FormalCPU(Elaboratable):
                 with m.Case(CSRAddr.MTVAL):
                     m.d.comb += Assert(self.csr_rd_data ==
                                        self.state_before._mtval)
+                with m.Case(CSRAddr.MSTATUS):
+                    m.d.comb += Assert(self.csr_rd_data ==
+                                       self.state_before._mstatus)
 
         def verify_CSRRW(self, m: Module):
             if mode != "csr":
@@ -911,6 +917,20 @@ class FormalCPU(Elaboratable):
                                    (self.csr_rd_data & ~self.imm))
                 self.verify_seq_csr_written(m)
 
+        def verify_PRIV(self, m: Module):
+            if mode != "csr":
+                return
+            # Anything other than an MRET will be illegal
+            with m.If(self.instr == 0x30200073):
+                m.d.comb += [
+                    Assert(self.state._pc == self.state_before._mepc),
+                    Assert(self.state._mstatus[MStatus.MIE] ==
+                           self.state_before._mstatus[MStatus.MPIE]),
+                    Assert(self.state._mstatus[MStatus.MPIE] == 1),
+                ]
+            with m.Else():
+                m.d.comb += Assert(0)
+
         def verify_opcode_SYSTEM(self, m: Module):
             with m.Switch(self.funct3):
                 with m.Case(SystemFunc.CSRRW):
@@ -925,6 +945,8 @@ class FormalCPU(Elaboratable):
                     self.verify_CSRRC(m)
                 with m.Case(SystemFunc.CSRRCI):
                     self.verify_CSRRCI(m)
+                with m.Case(SystemFunc.PRIV):
+                    self.verify_PRIV(m)
                 with m.Default():
                     m.d.comb += Assert(0)
 
@@ -1091,7 +1113,12 @@ class FormalCPU(Elaboratable):
             with m.Elif(self.did_ext_irq):
                 m.d.comb += Assert(self.state._mcause ==
                                    TrapCause.INT_MACH_EXTERNAL)
-            m.d.comb += Assert(self.state._mepc == self.int_return_pc)
+            m.d.comb += [
+                Assert(self.state._mepc == self.int_return_pc),
+                Assert(self.state._mstatus[MStatus.MPIE] ==
+                       self.state_before._mstatus[MStatus.MIE]),
+                Assert(self.state._mstatus[MStatus.MIE] == 0),
+            ]
 
     @ classmethod
     def make_clock(cls, m: Module) -> Tuple[Signal, Signal]:
@@ -1151,14 +1178,26 @@ class FormalCPU(Elaboratable):
 
         init_regs = [None] + [AnyConst(32) for _ in range(1, 32)]
         init_pc = AnyConst(32)
+        init_mtvec = AnyConst(32)
+        init_mcause = AnyConst(32)
+        init_mtval = AnyConst(32)
+        init_mepc = AnyConst(32)
+        init_mstatus = AnyConst(32)
 
         # Initialize registers
         with m.If(Initial()):
             m.d.comb += [
-                Assume(cpu.seq.state._pc == init_pc),
                 Assume(init_pc[:2] == 0),
+                Assume(init_mepc[:2] == 0),
+                Assume(cpu.seq.state._pc == init_pc),
+                Assume(cpu.seq.state._mtvec == init_mtvec),
+                Assume(cpu.seq.state._mcause == init_mcause),
+                Assume(cpu.seq.state._mtval == init_mtval),
+                Assume(cpu.seq.state._mepc == init_mepc),
+                Assume(cpu.seq.state._mstatus == init_mstatus),
                 Assume(data.did_mem_rd == 0),
                 Assume(data.did_mem_wr == 0),
+                Assume(data.regs_before[0] == 0),
             ]
             for i in range(1, 32):
                 m.d.comb += [
@@ -1196,6 +1235,7 @@ class FormalCPU(Elaboratable):
             m.d.ph2 += bef._mcause.eq(state._mcause)
             m.d.ph2 += bef._mepc.eq(state._mepc)
             m.d.ph2 += bef._mtval.eq(state._mtval)
+            m.d.ph2 += bef._mstatus.eq(state._mstatus)
             m.d.ph2 += bef._trap_svc.eq(state._trap_svc)
             for i in range(1, 32):
                 m.d.ph2 += data.regs_before[i].eq(cpu.regs._x_bank._mem[i])
@@ -1339,8 +1379,12 @@ class FormalCPU(Elaboratable):
                 m.d.comb += Assume(cpu.seq.time_irq | cpu.seq.ext_irq)
                 m.d.ph1 += data.did_time_irq.eq(cpu.seq.time_irq)
                 m.d.ph1 += data.did_ext_irq.eq(cpu.seq.ext_irq)
+
             with m.If(Past(cpu.instr_complete, clocks=2)):
                 m.d.ph2 += data.int_return_pc.eq(data.state._pc)
+
+            with m.If(Past(cpu.instr_complete) & ~Past(data.state._mstatus)[MStatus.MIE]):
+                m.d.comb += Assert(~data.state.trap)
 
             with m.If(Rose(cpu.seq.state._trap_svc)):
                 data.verify_irq(m)

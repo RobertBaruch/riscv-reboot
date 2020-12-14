@@ -1,7 +1,7 @@
 # Disable pylint's "your name is too short" warning.
 # pylint: disable=C0103
 
-from enum import Enum, unique
+from enum import IntEnum, unique
 
 from nmigen import Signal, Module, Elaboratable, signed, ClockDomain
 from nmigen.build import Platform
@@ -11,7 +11,7 @@ from nmigen.sim import Simulator, Delay, Settle, Tick
 
 
 @unique
-class Opcode(Enum):
+class Opcode(IntEnum):
     """Opcodes."""
     LOAD = 0b000_0011      # 0x03
     OP_IMM = 0b001_0011    # 0x13
@@ -27,7 +27,7 @@ class Opcode(Enum):
 
 
 @unique
-class OpcodeFormat(Enum):
+class OpcodeFormat(IntEnum):
     """Opcode formats."""
     R = 0
     I = 1
@@ -39,7 +39,7 @@ class OpcodeFormat(Enum):
 
 
 @unique
-class BranchCond(Enum):
+class BranchCond(IntEnum):
     """Branch conditions."""
     EQ = 0b000
     NE = 0b001
@@ -50,7 +50,7 @@ class BranchCond(Enum):
 
 
 @unique
-class MemAccessWidth(Enum):
+class MemAccessWidth(IntEnum):
     """Memory access widths."""
     B = 0b000
     H = 0b001
@@ -60,7 +60,7 @@ class MemAccessWidth(Enum):
 
 
 @unique
-class AluOp(Enum):
+class AluOp(IntEnum):
     "ALU card operations."
     NONE = 0b0000
     ADD = 0b0001
@@ -79,7 +79,7 @@ class AluOp(Enum):
 
 
 @unique
-class AluFunc(Enum):
+class AluFunc(IntEnum):
     """ALU functions."""
     ADD = 0b0000
     SUB = 0b1000
@@ -94,7 +94,7 @@ class AluFunc(Enum):
 
 
 @unique
-class SystemFunc(Enum):
+class SystemFunc(IntEnum):
     """System opcode functions."""
     PRIV = 0b000
     CSRRW = 0b001
@@ -106,7 +106,7 @@ class SystemFunc(Enum):
 
 
 @unique
-class PrivFunc(Enum):
+class PrivFunc(IntEnum):
     """Privileged functions."""
     # Functions for which rd and rs1 must be 0:
     ECALL = 0b000000000000
@@ -118,7 +118,7 @@ class PrivFunc(Enum):
 
 
 @unique
-class TrapCause(Enum):
+class TrapCause(IntEnum):
     """Trap causes."""
     INT_USER_SOFTWARE = 0x80000000
     INT_SUPV_SOFTWARE = 0x80000001
@@ -147,7 +147,7 @@ class TrapCause(Enum):
 
 
 @unique
-class CSRAddr(Enum):
+class CSRAddr(IntEnum):
     """CSR addresses."""
     MSTATUS = 0x300
     MTVEC = 0x305
@@ -158,7 +158,7 @@ class CSRAddr(Enum):
 
 
 @unique
-class MStatus(Enum):
+class MStatus(IntEnum):
     """Bits for mstatus bits."""
     MIE = 3
     MPIE = 7
