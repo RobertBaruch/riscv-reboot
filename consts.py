@@ -3,12 +3,6 @@
 
 from enum import IntEnum, unique
 
-from nmigen import Signal, Module, Elaboratable, signed, ClockDomain
-from nmigen.build import Platform
-from nmigen.asserts import Assert, Assume, Cover
-from nmigen.cli import main_parser, main_runner
-from nmigen.sim import Simulator, Delay, Settle, Tick
-
 
 @unique
 class Opcode(IntEnum):
@@ -162,3 +156,12 @@ class MStatus(IntEnum):
     """Bits for mstatus bits."""
     MIE = 3
     MPIE = 7
+
+
+@unique
+class InstrReg(IntEnum):
+    """Which register number to put on *_reg."""
+    ZERO = 0
+    RS1 = 1
+    RS2 = 2
+    RD = 3
