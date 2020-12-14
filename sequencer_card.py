@@ -466,6 +466,7 @@ class SequencerCard(Elaboratable):
         m.d.ph2 += self.state._exception.eq(1)
         m.d.ph2 += self.state._trap_cause.eq(exc)
         m.d.ph1 += self.state._mtval.eq(mtval)
+        m.d.ph1 += self.state._mepc.eq(self.state._pc)
         m.d.ph1 += self.state.trap.eq(1)
         m.d.comb += self._next_instr_phase.eq(0)
 
@@ -539,13 +540,16 @@ class SequencerCard(Elaboratable):
         TODO: Can we turn this into multiplex code?
         """
         with m.If(self.state._instr_phase == 0):
-            with m.If(self.state._reg_time_irq):
-                m.d.ph2 += self.state._trap_cause.eq(TrapCause.INT_MACH_TIMER)
-            with m.Elif(self.state._reg_ext_irq):
-                m.d.ph2 += self.state._trap_cause.eq(
-                    TrapCause.INT_MACH_EXTERNAL)
+            with m.If(~self.state._exception):
+                with m.If(self.state._reg_time_irq):
+                    m.d.ph2 += self.state._trap_cause.eq(
+                        TrapCause.INT_MACH_TIMER)
+                with m.Elif(self.state._reg_ext_irq):
+                    m.d.ph2 += self.state._trap_cause.eq(
+                        TrapCause.INT_MACH_EXTERNAL)
 
-            m.d.ph1 += self.state._mepc.eq(self.state._pc)
+                m.d.ph1 += self.state._mepc.eq(self.state._pc)
+
             m.d.ph1 += self.state._mcause.eq(self.state._trap_cause)
 
             # Clear the registered irqs.

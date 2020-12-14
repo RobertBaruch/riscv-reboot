@@ -995,7 +995,7 @@ class FormalCPU(Elaboratable):
             is_unknown_opcode = Signal()
             addr = self.memaddr_accessed
 
-            m.d.comb += Assert(self.cpu.fatal)
+            #m.d.comb += Assert(self.cpu.fatal)
 
             m.d.comb += is_zero_instr.eq(self.instr[:16] == 0)
             m.d.comb += is_ones_instr.eq(self.instr == 0xFFFFFFFF)
@@ -1068,42 +1068,55 @@ class FormalCPU(Elaboratable):
                                     SystemFunc.CSRRSI, SystemFunc.CSRRC, SystemFunc.CSRRCI):
                             m.d.comb += is_unknown_opcode.eq(0)
                         with m.Default():
-                            m.d.comb += is_unknown_opcode.eq(1)
+                            with m.If(self.instr == 0x30200073):
+                                m.d.comb += is_unknown_opcode.eq(0)
+                            with m.Else():
+                                m.d.comb += is_unknown_opcode.eq(1)
 
                 with m.Default():
                     m.d.comb += is_unknown_opcode.eq(1)
 
-            m.d.comb += Assert(is_zero_instr | is_ones_instr |
-                               is_misaligned_load | is_misaligned_store |
-                               is_instr_addr_misaligned | is_unknown_opcode)
+            is_exception = (is_zero_instr | is_ones_instr |
+                            is_misaligned_load | is_misaligned_store |
+                            is_instr_addr_misaligned | is_unknown_opcode)
 
-            # Exceptions load mepc with the PC of the instruction that caused the problem.
-            m.d.comb += Assert(self.state._mepc == self.state_before._pc)
+            # Make sure that on the first clock cycle 2 machine cycles after
+            # the exception condition, we are in the trapped state.
+            mcycle_end_with_exception = Signal()
+            m.d.comb += mcycle_end_with_exception.eq(
+                is_exception & cpu.seq.mcycle_end)
 
-            with m.If(is_instr_addr_misaligned):
-                m.d.comb += Assert(self.state._mcause ==
-                                   TrapCause.EXC_INSTR_ADDR_MISALIGN)
-                with m.Switch(self.opcode):
-                    with m.Case(Opcode.JAL, Opcode.JALR, Opcode.BRANCH):
-                        m.d.comb += Assert(self.state._mtval == branch_target)
-                    with m.Default():
-                        m.d.comb += Assert(self.state._mtval ==
-                                           self.state_before._pc)
+            with m.If(Past(mcycle_end_with_exception, clocks=13)):
+                m.d.comb += Assert(cpu.seq.state.trap)
 
-            with m.Elif(is_zero_instr | is_ones_instr | is_unknown_opcode):
-                m.d.comb += Assert(self.state._mcause ==
-                                   TrapCause.EXC_ILLEGAL_INSTR)
-                m.d.comb += Assert(self.state._mtval == self.instr)
+                # Exceptions load mepc with the PC of the instruction that caused the problem.
+                m.d.comb += Assert(self.state._mepc == self.state_before._pc)
 
-            with m.Elif(is_misaligned_load):
-                m.d.comb += Assert(self.state._mcause ==
-                                   TrapCause.EXC_LOAD_ADDR_MISALIGN)
-                m.d.comb += Assert(self.state._mtval == addr)
+                with m.If(is_instr_addr_misaligned):
+                    m.d.comb += Assert(self.state._mcause ==
+                                       TrapCause.EXC_INSTR_ADDR_MISALIGN)
+                    with m.Switch(self.opcode):
+                        with m.Case(Opcode.JAL, Opcode.JALR, Opcode.BRANCH):
+                            m.d.comb += Assert(self.state._mtval ==
+                                               branch_target)
+                        with m.Default():
+                            m.d.comb += Assert(self.state._mtval ==
+                                               self.state_before._pc)
 
-            with m.Elif(is_misaligned_store):
-                m.d.comb += Assert(self.state._mcause ==
-                                   TrapCause.EXC_STORE_AMO_ADDR_MISALIGN)
-                m.d.comb += Assert(self.state._mtval == store_addr)
+                with m.Elif(is_zero_instr | is_ones_instr | is_unknown_opcode):
+                    m.d.comb += Assert(self.state._mcause ==
+                                       TrapCause.EXC_ILLEGAL_INSTR)
+                    m.d.comb += Assert(self.state._mtval == self.instr)
+
+                with m.Elif(is_misaligned_load):
+                    m.d.comb += Assert(self.state._mcause ==
+                                       TrapCause.EXC_LOAD_ADDR_MISALIGN)
+                    m.d.comb += Assert(self.state._mtval == addr)
+
+                with m.Elif(is_misaligned_store):
+                    m.d.comb += Assert(self.state._mcause ==
+                                       TrapCause.EXC_STORE_AMO_ADDR_MISALIGN)
+                    m.d.comb += Assert(self.state._mtval == store_addr)
 
         def verify_irq(self, m: Module):
             """Verification for interrupts after trap_svc goes high."""
@@ -1364,13 +1377,14 @@ class FormalCPU(Elaboratable):
                 data.verify_instr(m)
 
         if mode == "fatal":
+            # This will only make fatal conditions happen.
             m.d.comb += Assume(~cpu.seq.time_irq)
             m.d.comb += Assume(~cpu.seq.ext_irq)
             m.d.comb += Assume(~cpu.seq.state._reg_time_irq)
             m.d.comb += Assume(~cpu.seq.state._reg_ext_irq)
-            m.d.comb += Assume(cpu.instr_complete == 0)
-            with m.If(cpu.fatal):
-                data.verify_fatal(m)
+            # m.d.comb += Assume(cpu.instr_complete == 0)
+            # with m.If(cpu.fatal):
+            data.verify_fatal(m)
 
         if mode == "irq":
             m.d.comb += Assume(~cpu.fatal)
