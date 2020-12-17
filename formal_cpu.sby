@@ -2,14 +2,14 @@
 cover
 --pycode-begin--
 for t in "bmc prove".split():
-  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal irq".split():
+  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal irq ecall".split():
     output(f"{o}-{t}")
 --pycode-end--
 
 [options]
 --pycode-begin--
 for t in "bmc prove".split():
-  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal irq".split():
+  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal irq ecall".split():
     output(f"{o}-{t}: mode {t}")
 --pycode-end--
 
@@ -23,15 +23,15 @@ if task != "cover":
     o = ts[0]
     t = ts[1]
     if o in "op op_imm lui auipc".split():
+        output(f"{o}-bmc: depth 7")
+        output(f"{o}-prove: depth 6")
+    elif o in "jal jalr branch csr ecall".split():
         output(f"{o}-bmc: depth 13")
         output(f"{o}-prove: depth 12")
-    elif o in "jal jalr branch csr".split():
+    elif o in "lb lbu lh lhu lw sb sh sw irq".split():
         output(f"{o}-bmc: depth 19")
         output(f"{o}-prove: depth 18")
-    elif o in "lb lbu lh lhu lw sb sh sw".split():
-        output(f"{o}-bmc: depth 25")
-        output(f"{o}-prove: depth 24")
-    elif o in "fatal irq".split():
+    elif o in "fatal".split():
         output(f"{o}-bmc: depth 25")
         output(f"{o}-prove: depth 26")
 --pycode-end--
@@ -74,6 +74,7 @@ if task != "cover":
 --pycode-end--
 
 proc
+attrmap -remove init a:uninitialized
 techmap -map %dff2ff top/w:clk %co
 prep -top top
 

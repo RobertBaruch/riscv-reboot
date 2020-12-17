@@ -29,8 +29,10 @@ class SequencerState:
     This is useful to take snapshots of the entire state.
     """
 
-    def __init__(self):
-        self._pc = Signal(32)
+    def __init__(self, ext_init: bool = False):
+        attrs = [] if not ext_init else [("uninitialized", "")]
+
+        self._pc = Signal(32, attrs=attrs)
         self._instr_phase = Signal(2)
         # Not quite a register, but the output of a latch
         self._instr = Signal(32)
@@ -46,23 +48,21 @@ class SequencerState:
 
         # Trap handling
         # Goes high when we are handling a trap condition,
-        # but not yet in the trap routine. See _trap_svc.
+        # but not yet in the trap routine.
         self.trap = Signal()
-        # Whether we're in a trap routine.
-        self._trap_svc = Signal()
 
         # Raised when an exception occurs.
         self._exception = Signal()
         self._trap_cause = Signal(32)  # Written to _mcause on ph2
 
-        self._mtvec = Signal(32)
-        self._mcause = Signal(32)
-        self._mepc = Signal(32)
-        self._mtval = Signal(32)
+        self._mtvec = Signal(32, attrs=attrs)
+        self._mcause = Signal(32, attrs=attrs)
+        self._mepc = Signal(32, attrs=attrs)
+        self._mtval = Signal(32, attrs=attrs)
         # Starts with interrupts globally disabled
-        self._mstatus = Signal(32)
+        self._mstatus = Signal(32, attrs=attrs)
         # Specific interrupts enable
-        self._mie = Signal(32)
+        self._mie = Signal(32, attrs=attrs)
         # Interrupts pending
         self._mip = Signal(32)
 
@@ -83,24 +83,8 @@ class SequencerCard(Elaboratable):
     ph2     |___|    |___|    |___|    |___|
     """
 
-    def __init__(self):
-        self.state = SequencerState()
-
-        # This signal is only used during formal verification to
-        # prevent the sequencer from doing anything. It's used so
-        # that initial values can be put into the state registers.
-        # The signal should be released on ph1.
-        #
-        # During init, registers are loaded with initial values.
-        self._initialize = Signal()
-        self._init_pc = Signal(32)
-        self._init_mtvec = Signal(32)
-        self._init_mcause = Signal(32)
-        self._init_mtval = Signal(32)
-        self._init_mepc = Signal(32)
-        self._init_mstatus = Signal(32)
-        self._init_mie = Signal(32)
-        self._init_mip = Signal(32)
+    def __init__(self, ext_init: bool = False):
+        self.state = SequencerState(ext_init)
 
         # A clock-based signal, high only at the end of a machine
         # cycle (i.e. phase 5, the very end of the write phase).
@@ -268,19 +252,7 @@ class SequencerCard(Elaboratable):
         ]
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
 
-        with m.If(~self._initialize):
-            self.process(m)
-        with m.Else():
-            m.d.ph1 += [
-                self.state._pc.eq(self._init_pc),
-                self.state._mtvec.eq(self._init_mtvec),
-                self.state._mcause.eq(self._init_mcause),
-                self.state._mtval.eq(self._init_mtval),
-                self.state._mepc.eq(self._init_mepc),
-                self.state._mstatus.eq(self._init_mstatus),
-                self.state._mie.eq(self._init_mie),
-                self.state._mip.eq(self._init_mip),
-            ]
+        self.process(m)
 
         return m
 
@@ -331,10 +303,9 @@ class SequencerCard(Elaboratable):
             self.state._mip[MInterrupt.MEI]
         )
         # We only check interrupts once we're about to load an instruction but we're not already
-        # servicing an interrupt.
+        # trapping an interrupt.
         is_interrupted = all_true(self.instr_complete,
                                   ~self.state.trap,
-                                  ~self.state._trap_svc,
                                   is_interrupt_pending,
                                   self.state._mstatus[MStatus.MIE])
 
@@ -545,7 +516,7 @@ class SequencerCard(Elaboratable):
                     with m.Default():
                         self.handle_illegal_instr(m)
 
-    def set_exception(self, m: Module, exc: TrapCause, mtval: Signal):
+    def set_exception(self, m: Module, exc: TrapCause, mtval: Signal, fatal: bool = True):
         m.d.ph2 += self.state._exception.eq(1)
         m.d.ph2 += self.state._trap_cause.eq(exc)
         m.d.ph1 += self.state._mtval.eq(mtval)
@@ -622,55 +593,55 @@ class SequencerCard(Elaboratable):
 
         TODO: Can we turn this into multiplex code?
         """
-        with m.If(self.state._instr_phase == 0):
-            with m.If(~self.state._exception):
-                with m.If(self.state._mip[MInterrupt.MTI]):
-                    m.d.ph2 += self.state._trap_cause.eq(
-                        TrapCause.INT_MACH_TIMER)
-                    m.d.ph1 += self.state._mip[MInterrupt.MTI].eq(0)
-                with m.Elif(self.state._mip[MInterrupt.MEI]):
-                    m.d.ph2 += self.state._trap_cause.eq(
-                        TrapCause.INT_MACH_EXTERNAL)
-                    m.d.ph1 += self.state._mip[MInterrupt.MEI].eq(0)
+        is_int = ~self.state._exception
+        int_cause = Signal(32)
 
-                m.d.ph1 += self.state._mepc.eq(self.state._pc)
+        fatal = Signal()
+        m.d.comb += fatal.eq(all_true(~is_int,
+                                      ~self.state._trap_cause[31],
+                                      self.state._trap_cause != TrapCause.EXC_ECALL_FROM_MACH_MODE,
+                                      self.state._trap_cause != TrapCause.EXC_BREAKPOINT))
 
-            m.d.ph1 += self.state._mcause.eq(self.state._trap_cause)
-
-            is_int = self.state._trap_cause[31]
-            vec_mode = self.state._mtvec[:2]
-
-            m.d.comb += self.data_x_out.eq(self.state._mtvec & 0xFFFFFFFC)
-            with m.If(all_true(is_int, vec_mode == 1)):
-                m.d.comb += [
-                    self.data_y_out[2:].eq(self.state._trap_cause[:30]),
-                    self.data_y_out[0:2].eq(0),
-                ]
-            with m.Else():
-                m.d.comb += self.data_y_out.eq(0)
-            m.d.comb += [
-                self.alu_op_to_z.eq(AluOp.ADD),
-                self._z_to_memaddr.eq(1),
-                self._next_instr_phase.eq(1),
-            ]
+        with m.If(is_int):
+            with m.If(self.state._mip[MInterrupt.MEI]):
+                m.d.comb += int_cause.eq(TrapCause.INT_MACH_EXTERNAL)
+                m.d.ph1 += self.state._mip[MInterrupt.MEI].eq(0)
+            with m.Elif(self.state._mip[MInterrupt.MTI]):
+                m.d.comb += int_cause.eq(TrapCause.INT_MACH_TIMER)
+                m.d.ph1 += self.state._mip[MInterrupt.MTI].eq(0)
+            m.d.ph1 += self.state._mepc.eq(self.state._pc)
+            m.d.ph1 += self.state._mcause.eq(int_cause)
 
         with m.Else():
-            with m.If(self.state._exception):
-                m.d.comb += self._next_instr_phase.eq(1)
-                m.d.comb += self.fatal.eq(1)
-            with m.Else():
-                m.d.comb += [
-                    self.mem_rd.eq(1),
-                    self._memdata_to_pc.eq(1),
-                    self._memdata_to_memaddr.eq(1),
-                ]
-                m.d.ph2 += self.state._exception.eq(0)
-                m.d.ph2 += self.state._trap_cause.eq(0)
-                m.d.ph1 += self.state.trap.eq(0)
-                m.d.ph1 += self.state._trap_svc.eq(1)
-                m.d.ph1 += self.state._mstatus[MStatus.MPIE].eq(
-                    self.state._mstatus[MStatus.MIE])
-                m.d.ph1 += self.state._mstatus[MStatus.MIE].eq(0)
+            m.d.ph1 += self.state._mcause.eq(self.state._trap_cause)
+
+        with m.If(fatal):
+            m.d.comb += self._next_instr_phase.eq(0)
+            m.d.comb += self.fatal.eq(1)
+
+        vec_mode = self.state._mtvec[:2]
+
+        m.d.comb += self.data_x_out.eq(self.state._mtvec & 0xFFFFFFFC)
+        with m.If(all_true(is_int, vec_mode == 1)):
+            m.d.comb += [
+                self.data_y_out[2:].eq(int_cause[:30]),
+                self.data_y_out[0:2].eq(0),
+            ]
+        with m.Else():
+            m.d.comb += self.data_y_out.eq(0)
+
+        m.d.comb += [
+            self.alu_op_to_z.eq(AluOp.ADD),
+            self._z_to_memaddr.eq(1),
+            self._z_to_pc.eq(1),
+            self.instr_complete.eq(self.mcycle_end),
+        ]
+
+        with m.If(~fatal):
+            m.d.ph1 += self.state.trap.eq(0)
+            m.d.ph1 += self.state._mstatus[MStatus.MPIE].eq(
+                self.state._mstatus[MStatus.MIE])
+            m.d.ph1 += self.state._mstatus[MStatus.MIE].eq(0)
 
     def handle_lui(self, m: Module):
         """Adds the LUI logic to the given module.
@@ -1418,6 +1389,16 @@ class SequencerCard(Elaboratable):
                     self.handle_MRET(m)
                 with m.Else():
                     self.handle_illegal_instr(m)
+            with m.Case(PrivFunc.ECALL):
+                with m.If((self._rd == 0) & (self._rs1 == 0)):
+                    self.handle_ECALL(m)
+                with m.Else():
+                    self.handle_illegal_instr(m)
+            with m.Case(PrivFunc.EBREAK):
+                with m.If((self._rd == 0) & (self._rs1 == 0)):
+                    self.handle_EBREAK(m)
+                with m.Else():
+                    self.handle_illegal_instr(m)
             with m.Default():
                 self.handle_illegal_instr(m)
 
@@ -1432,6 +1413,14 @@ class SequencerCard(Elaboratable):
         m.d.ph1 += self.state._mstatus[MStatus.MIE].eq(
             self.state._mstatus[MStatus.MPIE])
         m.d.ph1 += self.state._mstatus[MStatus.MPIE].eq(1)
+
+    def handle_ECALL(self, m: Module):
+        self.set_exception(
+            m, TrapCause.EXC_ECALL_FROM_MACH_MODE, mtval=self.state._pc, fatal=False)
+
+    def handle_EBREAK(self, m: Module):
+        self.set_exception(
+            m, TrapCause.EXC_BREAKPOINT, mtval=self.state._pc, fatal=False)
 
     @ classmethod
     def formal(cls) -> Tuple[Module, List[Signal]]:

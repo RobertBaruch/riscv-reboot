@@ -58,12 +58,9 @@ class RegCard(Elaboratable):
     reg_z: Signal
     reg_page: Signal
 
-    def __init__(self):
+    def __init__(self, ext_init: bool = False):
         """Constructs a register card."""
-        # Used only during formal verification to initialize registers
-        # to specific values.
-        self._initialize = Signal()
-        self._init_reg = Array([Signal(32) for _ in range(32)])
+        attrs = [] if not ext_init else [("uninitialized", "")]
 
         # Buses
         self.data_x = Signal(32)
@@ -79,8 +76,8 @@ class RegCard(Elaboratable):
         self.reg_page = Signal()
 
         # Submodules
-        self._x_bank = AsyncMemory(width=32, addr_lines=6)
-        self._y_bank = AsyncMemory(width=32, addr_lines=6)
+        self._x_bank = AsyncMemory(width=32, addr_lines=6, ext_init=ext_init)
+        self._y_bank = AsyncMemory(width=32, addr_lines=6, ext_init=ext_init)
         self._x_latch = TransparentLatch(size=32)
         self._y_latch = TransparentLatch(size=32)
         self._x_bank_wr_latch = TransparentLatch(size=32)
@@ -208,11 +205,6 @@ class RegCard(Elaboratable):
             self.data_x.eq(x_latch.data_out),
             self.data_y.eq(y_latch.data_out),
         ]
-
-        with m.If(self._initialize):
-            for i in range(len(self._init_reg)):
-                m.d.comb += x_bank._init_mem[i].eq(self._init_reg[i])
-                m.d.comb += y_bank._init_mem[i].eq(self._init_reg[i])
 
         return m
 

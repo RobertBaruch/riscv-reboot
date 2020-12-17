@@ -27,7 +27,7 @@ class AsyncMemory(Elaboratable):
     n_oe: Signal
     n_wr: Signal
 
-    def __init__(self, width: int, addr_lines: int):
+    def __init__(self, width: int, addr_lines: int, ext_init: bool = False):
         """Constructs an asynchronous memory.
 
         Args:
@@ -39,10 +39,7 @@ class AsyncMemory(Elaboratable):
         assert addr_lines > 0
         assert addr_lines <= 16
 
-        # Used only during formal verification to initialize registers
-        # to specific values.
-        self._initialize = Signal()
-        self._init_mem = Array([Signal(width) for _ in range(2**addr_lines)])
+        attrs = [] if not ext_init else [("uninitialized", "")]
 
         self.addr = Signal(addr_lines)
         self.n_oe = Signal()
@@ -55,7 +52,7 @@ class AsyncMemory(Elaboratable):
 
         # The actual memory
         self._mem = Array(
-            [Signal(width, reset_less=True) for _ in range(2**addr_lines)])
+            [Signal(width, reset_less=True, attrs=attrs) for _ in range(2**addr_lines)])
 
     def elaborate(self, _: Platform) -> Module:
         """Implements the logic of an asynchronous memory.
@@ -76,10 +73,6 @@ class AsyncMemory(Elaboratable):
         with m.If(~self.n_oe & self.n_wr):
             m.d.comb += self.data_out.eq(self._mem[self.addr])
         m.d.wr_clk += self._mem[self.addr].eq(self.data_in)
-
-        with m.If(self._initialize):
-            for i in range(len(self._mem)):
-                m.d.wr_clk += self._mem[i].eq(self._init_mem[i])
 
         return m
 

@@ -2,7 +2,7 @@
 # and does BMC and prove on them.
 
 ALL1 := op op_imm lui auipc
-ALL2 := jal jalr branch csr
+ALL2 := jal jalr branch csr ecall
 ALL3 := lb lbu lh lhu lw sb sh sw fatal irq
 BMC1 := $(patsubst %,%-bmc,$(ALL1))
 BMC2 := $(patsubst %,%-bmc,$(ALL2))

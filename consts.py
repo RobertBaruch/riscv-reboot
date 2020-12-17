@@ -101,7 +101,7 @@ class SystemFunc(IntEnum):
 
 @unique
 class PrivFunc(IntEnum):
-    """Privileged functions."""
+    """Privileged functions, funct12 value."""
     # Functions for which rd and rs1 must be 0:
     ECALL = 0b000000000000
     EBREAK = 0b000000000001
