@@ -53,12 +53,19 @@ class _ConditionalShiftRight(Elaboratable):
             msb = self.data_in[-1]
             w = len(self.data_out)
 
-            m.d.comb += self.data_out.bit_select(w-N, N).eq(
-                Mux(self.arithmetic, Repl(msb, N), 0))
+            # m.d.comb += self.data_out.bit_select(w-N, N).eq(
+            #     Mux(self.arithmetic, Repl(msb, N), 0))
+
+            with m.If(self.arithmetic):
+                m.d.comb += self.data_out[w-N:].eq(Repl(msb, N))
+            with m.Else():
+                m.d.comb += self.data_out[w-N:].eq(0)
 
             # The rest are moved over.
-            m.d.comb += self.data_out.bit_select(0, w-N).eq(
-                self.data_in.bit_select(N, w-N))
+            # m.d.comb += self.data_out.bit_select(0, w-N).eq(
+            #     self.data_in.bit_select(N, w-N))
+
+            m.d.comb += self.data_out[:w-N].eq(self.data_in[N:])
 
         with m.Else():
             m.d.comb += self.data_out.eq(self.data_in)

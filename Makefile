@@ -2,8 +2,8 @@
 # and does BMC and prove on them.
 
 ALL1 := op op_imm lui auipc
-ALL2 := jal jalr branch csr
-ALL3 := lb lbu lh lhu lw sb sh sw ill
+ALL2 := jal jalr branch csr ecall
+ALL3 := lb lbu lh lhu lw sb sh sw fatal irq
 BMC1 := $(patsubst %,%-bmc,$(ALL1))
 BMC2 := $(patsubst %,%-bmc,$(ALL2))
 BMC3 := $(patsubst %,%-bmc,$(ALL3))
@@ -21,17 +21,21 @@ ALL := $(ALLBMC) $(ALLPROVE)
 SRCS := formal_cpu.py sequencer_card.py reg_card.py shift_card.py alu_card.py
 SRCS += transparent_latch.py async_memory.py util.py consts.py
 
-all: | $(ALLPROVE)
+all: | $(ALLBMC)
 	@for i in $(ALL1) $(ALL2) $(ALL3); do \
-	  DIR="formal_cpu_$$i-prove"; \
+	  DIR="formal_cpu_$$i-bmc"; \
 	  if [ -e "$$DIR" -a -f "$$DIR/status" ]; then \
-	    printf "%-15s: %s\n" "$$i-prove" "`cat $$DIR/status`"; \
+	    printf "%-15s: %s\n" "$$i-bmc" "`cat $$DIR/status`"; \
 	  else \
-	  	printf "%-15s: %s\n" "$$i-prove" "UNCOMPLETED"; \
+	  	printf "%-15s: %s\n" "$$i-bmc" "UNCOMPLETED"; \
 	  fi; \
 	done
 
 clean: cleanbmc cleanprove
+
+cover: $(SRCS)
+	python3 formal_cpu.py gen
+	sby -f formal_cpu.sby cover
 
 cleanbmc:
 	@for i in $(ALLBMC); do \
