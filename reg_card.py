@@ -2,7 +2,7 @@
 # pylint: disable=C0103
 from typing import List, Tuple
 
-from nmigen import Signal, Module, Elaboratable, ClockDomain, ClockSignal
+from nmigen import Signal, Module, Elaboratable, ClockDomain, ClockSignal, Array
 from nmigen import Mux
 from nmigen.build import Platform
 from nmigen.asserts import Assert, Assume, Cover, Past, Stable, Rose, AnyConst, Initial
@@ -60,6 +60,11 @@ class RegCard(Elaboratable):
 
     def __init__(self):
         """Constructs a register card."""
+        # Used only during formal verification to initialize registers
+        # to specific values.
+        self._initialize = Signal()
+        self._init_reg = Array([Signal(32) for _ in range(32)])
+
         # Buses
         self.data_x = Signal(32)
         self.data_y = Signal(32)
@@ -203,6 +208,11 @@ class RegCard(Elaboratable):
             self.data_x.eq(x_latch.data_out),
             self.data_y.eq(y_latch.data_out),
         ]
+
+        with m.If(self._initialize):
+            for i in range(len(self._init_reg)):
+                m.d.comb += x_bank._init_mem[i].eq(self._init_reg[i])
+                m.d.comb += y_bank._init_mem[i].eq(self._init_reg[i])
 
         return m
 

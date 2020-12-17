@@ -144,18 +144,28 @@ class TrapCause(IntEnum):
 class CSRAddr(IntEnum):
     """CSR addresses."""
     MSTATUS = 0x300
+    MIE = 0x304
     MTVEC = 0x305
     MEPC = 0x341
     MCAUSE = 0x342
     MTVAL = 0x343
+    MIP = 0x344
     LAST = 0xFFF
 
 
 @unique
 class MStatus(IntEnum):
-    """Bits for mstatus bits."""
-    MIE = 3
-    MPIE = 7
+    """Bits for mstatus."""
+    MIE = 3   # Machine interrupts global enable
+    MPIE = 7  # Machine interrupts global enable (previous value)
+
+
+@unique
+class MInterrupt(IntEnum):
+    """Bits for mie and mip."""
+    MSI = 3   # Machine software interrupt enabled/pending
+    MTI = 7   # Machine timer interrupt enabled/pending
+    MEI = 11  # Machine external interrupt enabled/pending
 
 
 @unique

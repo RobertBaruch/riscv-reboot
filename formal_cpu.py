@@ -12,13 +12,14 @@ from nmigen.asserts import Assert, Assume, Cover, Stable, Past, Initial, AnyCons
 
 from alu_card import AluCard
 from consts import AluFunc, AluOp, BranchCond, CSRAddr, MemAccessWidth, Opcode
-from consts import SystemFunc, TrapCause, MStatus
+from consts import SystemFunc, TrapCause, MStatus, MInterrupt
 from reg_card import RegCard
 from sequencer_card import SequencerCard, SequencerState
 from shift_card import ShiftCard
 from util import main
 
 mode = ""
+MRET = 0x30200073
 
 
 class FormalCPU(Elaboratable):
@@ -779,6 +780,14 @@ class FormalCPU(Elaboratable):
                     m.d.comb += Assert(self.csr_wr_data == self.state._mtval)
                 with m.Case(CSRAddr.MSTATUS):
                     m.d.comb += Assert(self.csr_wr_data == self.state._mstatus)
+                with m.Case(CSRAddr.MIE):
+                    m.d.comb += Assert(self.csr_wr_data == self.state._mie)
+                with m.Case(CSRAddr.MIP):
+                    # Pending machine interrupts are not writable.
+                    m.d.comb += Assert((self.csr_wr_data &
+                                        0xFFFFF777) == self.state._mip)
+                    m.d.comb += Assert(((self.state_before._mip ^
+                                         self.state._mip) & 0x00000888) == 0)
 
         def verify_seq_csr_read(self, m: Module):
             with m.Switch(self.csr_accessed):
@@ -797,6 +806,12 @@ class FormalCPU(Elaboratable):
                 with m.Case(CSRAddr.MSTATUS):
                     m.d.comb += Assert(self.csr_rd_data ==
                                        self.state_before._mstatus)
+                with m.Case(CSRAddr.MIE):
+                    m.d.comb += Assert(self.csr_rd_data ==
+                                       self.state_before._mie)
+                with m.Case(CSRAddr.MIP):
+                    m.d.comb += Assert(self.csr_rd_data ==
+                                       self.state_before._mip)
 
         def verify_CSRRW(self, m: Module):
             if mode != "csr":
@@ -921,7 +936,7 @@ class FormalCPU(Elaboratable):
             if mode != "csr":
                 return
             # Anything other than an MRET will be illegal
-            with m.If(self.instr == 0x30200073):
+            with m.If(self.instr == MRET):
                 m.d.comb += [
                     Assert(self.state._pc == self.state_before._mepc),
                     Assert(self.state._mstatus[MStatus.MIE] ==
@@ -995,7 +1010,7 @@ class FormalCPU(Elaboratable):
             is_unknown_opcode = Signal()
             addr = self.memaddr_accessed
 
-            #m.d.comb += Assert(self.cpu.fatal)
+            # m.d.comb += Assert(self.cpu.fatal)
 
             m.d.comb += is_zero_instr.eq(self.instr[:16] == 0)
             m.d.comb += is_ones_instr.eq(self.instr == 0xFFFFFFFF)
@@ -1068,7 +1083,7 @@ class FormalCPU(Elaboratable):
                                     SystemFunc.CSRRSI, SystemFunc.CSRRC, SystemFunc.CSRRCI):
                             m.d.comb += is_unknown_opcode.eq(0)
                         with m.Default():
-                            with m.If(self.instr == 0x30200073):
+                            with m.If(self.instr == MRET):
                                 m.d.comb += is_unknown_opcode.eq(0)
                             with m.Else():
                                 m.d.comb += is_unknown_opcode.eq(1)
@@ -1136,9 +1151,6 @@ class FormalCPU(Elaboratable):
     @ classmethod
     def make_clock(cls, m: Module) -> Tuple[Signal, Signal]:
         """Creates the clock domains and signals."""
-        phase_count = Signal(3, reset=0, reset_less=True)
-        mcycle_end = Signal()
-
         ph1 = ClockDomain("ph1")
         ph2 = ClockDomain("ph2")
 
@@ -1182,236 +1194,267 @@ class FormalCPU(Elaboratable):
         # Collected data throughout an instruction
         data = FormalCPU.Collected(m, cpu)
 
+        initialize = Signal(reset=1, reset_less=True)
+        m.d.ph1 += initialize.eq(0)
+        m.d.comb += cpu.seq._initialize.eq(initialize)
+        m.d.comb += cpu.regs._initialize.eq(initialize)
+
         # Machine cycle counting
         mcycle = Signal(3, reset_less=True, reset=0)
-        with m.If(~cpu.seq.state.trap & ~cpu.seq.fatal & ~cpu.seq.state._exception):
+
+        with m.If(~initialize):
+            # with m.If(~cpu.seq.state.trap & ~cpu.seq.fatal & ~cpu.seq.state._exception):
             m.d.ph1 += mcycle.eq(mcycle+1)
             with m.If(cpu.instr_complete):
                 m.d.ph1 += mcycle.eq(0)
 
-        init_regs = [None] + [AnyConst(32) for _ in range(1, 32)]
-        init_pc = AnyConst(32)
-        init_mtvec = AnyConst(32)
-        init_mcause = AnyConst(32)
-        init_mtval = AnyConst(32)
-        init_mepc = AnyConst(32)
-        init_mstatus = AnyConst(32)
+            # Assume memory and fake CSR data is stable
+            with m.If(phase_count > 1):
+                m.d.comb += Assume(Stable(cpu.memdata_rd))
+                m.d.comb += Assume(Stable(cpu.csr_rd_data))
 
-        # Initialize registers
-        with m.If(Initial()):
-            m.d.comb += [
-                Assume(init_pc[:2] == 0),
-                Assume(init_mepc[:2] == 0),
-                Assume(cpu.seq.state._pc == init_pc),
-                Assume(cpu.seq.state._mtvec == init_mtvec),
-                Assume(cpu.seq.state._mcause == init_mcause),
-                Assume(cpu.seq.state._mtval == init_mtval),
-                Assume(cpu.seq.state._mepc == init_mepc),
-                Assume(cpu.seq.state._mstatus == init_mstatus),
-                Assume(data.did_mem_rd == 0),
-                Assume(data.did_mem_wr == 0),
-                Assume(data.regs_before[0] == 0),
-            ]
-            for i in range(1, 32):
-                m.d.comb += [
-                    Assume(cpu.regs._x_bank._mem[i] == init_regs[i]),
-                    Assume(data.regs_before[i] == init_regs[i]),
+            bef = data.state_before
+            state = cpu.seq.state
+
+            # Take a snapshot of the state just before latching the instruction.
+            with m.If((mcycle == 0) & (phase_count == 1) & ~cpu.fatal & ~cpu.seq.state._exception):
+                m.d.ph2 += bef._pc.eq(state._pc)
+                m.d.ph2 += bef._instr_phase.eq(state._instr_phase)
+                m.d.ph2 += bef._instr.eq(state._instr)
+                m.d.ph2 += bef._stored_alu_eq.eq(state._stored_alu_eq)
+                m.d.ph2 += bef._stored_alu_lt.eq(state._stored_alu_lt)
+                m.d.ph2 += bef._stored_alu_ltu.eq(state._stored_alu_ltu)
+                m.d.ph2 += bef.memaddr.eq(state.memaddr)
+                m.d.ph2 += bef.memdata_wr.eq(state.memdata_wr)
+                m.d.ph2 += bef._tmp.eq(state._tmp)
+                m.d.ph2 += bef.reg_page.eq(state.reg_page)
+                m.d.ph2 += bef.trap.eq(state.trap)
+                m.d.ph2 += bef._exception.eq(state._exception)
+                m.d.ph2 += bef._mtvec.eq(state._mtvec)
+                m.d.ph2 += bef._trap_cause.eq(state._trap_cause)
+                m.d.ph2 += bef._mcause.eq(state._mcause)
+                m.d.ph2 += bef._mepc.eq(state._mepc)
+                m.d.ph2 += bef._mtval.eq(state._mtval)
+                m.d.ph2 += bef._mstatus.eq(state._mstatus)
+                m.d.ph2 += bef._mie.eq(state._mie)
+                m.d.ph2 += bef._mip.eq(state._mip)
+                m.d.ph2 += bef._trap_svc.eq(state._trap_svc)
+                for i in range(1, 32):
+                    m.d.ph2 += data.regs_before[i].eq(cpu.regs._x_bank._mem[i])
+                m.d.ph2 += data.regs_before[0].eq(0)
+                m.d.ph2 += [
+                    data.did_mem_rd.eq(0),
+                    data.did_mem_wr.eq(0),
+                    data.did_csr_rd.eq(0),  # These can get overridden later
+                    data.did_csr_wr.eq(0),
                 ]
 
-        # Assume memory and fake CSR data is stable
-        with m.If(phase_count > 1):
-            m.d.comb += Assume(Stable(cpu.memdata_rd))
-            m.d.comb += Assume(Stable(cpu.csr_rd_data))
-
-        bef = data.state_before
-        state = cpu.seq.state
-
-        # Take a snapshot of the state just before latching the instruction.
-        with m.If((mcycle == 0) & (phase_count == 1) & ~cpu.fatal
-                  & ~cpu.seq.state._exception & ~cpu.seq.state.trap):
-            m.d.ph2 += bef._pc.eq(state._pc)
-            m.d.ph2 += bef._instr_phase.eq(state._instr_phase)
-            m.d.ph2 += bef._instr.eq(state._instr)
-            m.d.ph2 += bef._stored_alu_eq.eq(state._stored_alu_eq)
-            m.d.ph2 += bef._stored_alu_lt.eq(state._stored_alu_lt)
-            m.d.ph2 += bef._stored_alu_ltu.eq(state._stored_alu_ltu)
-            m.d.ph2 += bef.memaddr.eq(state.memaddr)
-            m.d.ph2 += bef.memdata_wr.eq(state.memdata_wr)
-            m.d.ph2 += bef._tmp.eq(state._tmp)
-            m.d.ph2 += bef.reg_page.eq(state.reg_page)
-            m.d.ph2 += bef._reg_time_irq.eq(state._reg_time_irq)
-            m.d.ph2 += bef._reg_ext_irq.eq(state._reg_ext_irq)
-            m.d.ph2 += bef.trap.eq(state.trap)
-            m.d.ph2 += bef._exception.eq(state._exception)
-            m.d.ph2 += bef._mtvec.eq(state._mtvec)
-            m.d.ph2 += bef._trap_cause.eq(state._trap_cause)
-            m.d.ph2 += bef._mcause.eq(state._mcause)
-            m.d.ph2 += bef._mepc.eq(state._mepc)
-            m.d.ph2 += bef._mtval.eq(state._mtval)
-            m.d.ph2 += bef._mstatus.eq(state._mstatus)
-            m.d.ph2 += bef._trap_svc.eq(state._trap_svc)
             for i in range(1, 32):
-                m.d.ph2 += data.regs_before[i].eq(cpu.regs._x_bank._mem[i])
-            m.d.ph2 += data.regs_before[0].eq(0)
+                m.d.comb += data.regs_after[i].eq(cpu.regs._x_bank._mem[i])
+            m.d.comb += data.regs_after[0].eq(0)
+
+            # If we read or write memory outside the first machine cycle, save it.
+            # But complain if we do more than only one read or one write.
+            m.d.comb += Assert(~(data.did_mem_rd & data.did_mem_wr))
+
+            with m.If((mcycle > 0) & cpu.mem_rd & (phase_count == 1) & ~cpu.fatal):
+                m.d.comb += Assert(~data.did_mem_rd & ~data.did_mem_wr)
+                m.d.ph2 += data.did_mem_rd.eq(1)
+                m.d.ph2 += data.memaddr_accessed.eq(cpu.memaddr)
+                m.d.ph2 += data.mem_rd_data.eq(cpu.memdata_rd)
+
+            # Yes, phase 1. The fatal signal goes high on phase 2,
+            # because we know the memory we're going to write to on
+            # phase 1. The memory may not actually get written until
+            # phase 4, but the address and data are already set up now.
+            with m.Elif((mcycle > 0) & cpu.mem_wr & (phase_count == 1) & ~cpu.fatal):
+                m.d.comb += Assert(~data.did_mem_rd & ~data.did_mem_wr)
+                m.d.ph2 += data.did_mem_wr.eq(1)
+                m.d.ph2 += data.memaddr_accessed.eq(cpu.memaddr)
+                m.d.ph2 += data.mem_wr_data.eq(cpu.memdata_wr)
+                m.d.ph2 += data.mem_wr_mask.eq(cpu.mem_wr_mask)
+
+            with m.If((mcycle == 0) & (cpu.z_to_csr | cpu.csr_to_x) & (phase_count == 1) & ~cpu.fatal):
+                m.d.ph2 += [
+                    data.did_csr_rd.eq(cpu.csr_to_x),
+                    data.did_csr_wr.eq(cpu.z_to_csr),
+                    data.csr_accessed.eq(cpu.csr_num),
+                    data.csr_rd_data.eq(cpu.x_bus),
+                    data.csr_wr_data.eq(cpu.z_bus),
+                ]
+
+            # Covers
+            m.d.comb += Cover(cpu.instr_complete)
+            m.d.comb += Cover(cpu.seq.state.trap)
+            # m.d.comb += Cover(Past(cpu.seq.trap, clocks=12))
+            # m.d.comb += Cover(Past(cpu.seq.fatal, clocks=12))
+            # m.d.comb += Cover(cpu.seq._trap_svc)
+            # m.d.comb += Cover(cpu.seq._trap_cause == TrapCause.INT_MACH_TIMER)
+            m.d.comb += Cover(Past(cpu.seq.time_irq, 18) &
+                              Past(cpu.seq.instr_complete, 18) &
+                              ~Past(cpu.seq.state._exception, 18))
+
+            # Asserts and Assumptions based on which instructions we're verifying.
+            cycles = {
+                "op": 1,
+                "op_imm": 1,
+                "lui": 1,
+                "auipc": 1,
+                "jal": 2,
+                "jalr": 2,
+                "branch": 2,
+                "csr": 2,
+                "lb": 3,
+                "lbu": 3,
+                "lh": 3,
+                "lhu": 3,
+                "lw": 3,
+                "sb": 3,
+                "sh": 3,
+                "sw": 3,
+            }
+            opcodes = {
+                "op": Opcode.OP,
+                "op_imm": Opcode.OP_IMM,
+                "lui": Opcode.LUI,
+                "auipc": Opcode.AUIPC,
+                "jal": Opcode.JAL,
+                "jalr": Opcode.JALR,
+                "branch": Opcode.BRANCH,
+                "csr": Opcode.SYSTEM,
+                "lb": Opcode.LOAD,
+                "lbu": Opcode.LOAD,
+                "lh": Opcode.LOAD,
+                "lhu": Opcode.LOAD,
+                "lw": Opcode.LOAD,
+                "sb": Opcode.STORE,
+                "sh": Opcode.STORE,
+                "sw": Opcode.STORE,
+            }
+            widths = {
+                "lb": MemAccessWidth.B,
+                "lbu": MemAccessWidth.BU,
+                "lh": MemAccessWidth.H,
+                "lhu": MemAccessWidth.HU,
+                "lw": MemAccessWidth.W,
+                "sb": MemAccessWidth.B,
+                "sh": MemAccessWidth.H,
+                "sw": MemAccessWidth.W,
+            }
+            if mode in cycles:
+                with m.If(phase_count == 5):
+                    m.d.comb += Assume(cpu.instr_complete ==
+                                       (mcycle == cycles[mode]-1))
+                m.d.comb += Assert(mcycle < cycles[mode])
+
+            if mode in widths:
+                with m.If((mcycle == 0) & (phase_count == 2)):
+                    m.d.comb += Assume(data.funct3 == widths[mode])
+
+            if mode in opcodes:
+                m.d.comb += Assert(~cpu.fatal)
+                m.d.comb += Assert(~cpu.seq.state.trap)
+                m.d.comb += Assume(~cpu.seq.state._exception)
+                m.d.comb += Assume(~cpu.seq.time_irq)
+                m.d.comb += Assume(~cpu.seq.ext_irq)
+                with m.If((mcycle == 0) & (phase_count == 2)):
+                    m.d.comb += Assume(data.opcode == opcodes[mode])
+                # Formal verification just after we've completed an instruction.
+                with m.If(Past(cpu.instr_complete)):
+                    data.verify_instr(m)
+
+            if mode == "fatal":
+                # This will only verify fatal conditions.
+                m.d.comb += Assume(~cpu.seq.time_irq)
+                m.d.comb += Assume(~cpu.seq.ext_irq)
+                m.d.comb += Assume(~cpu.seq.state._mip[MInterrupt.MTI])
+                m.d.comb += Assume(~cpu.seq.state._mip[MInterrupt.MEI])
+                data.verify_fatal(m)
+
+            if mode == "irq":
+                m.d.comb += Assume(~cpu.fatal)
+                m.d.comb += Assume(~cpu.seq.state._exception)
+
+                # I only want to check an interrupt request at the end of an instruction.
+                with m.If(cpu.instr_complete):
+                    m.d.comb += Assume(cpu.seq.time_irq | cpu.seq.ext_irq)
+                    m.d.ph1 += data.did_time_irq.eq(
+                        cpu.seq.time_irq & data.state._mie[MInterrupt.MTI])
+                    m.d.ph1 += data.did_ext_irq.eq(
+                        cpu.seq.ext_irq & data.state._mie[MInterrupt.MEI])
+
+                with m.Else():
+                    m.d.comb += Assume(~cpu.seq.time_irq & ~cpu.seq.ext_irq)
+
+                with m.If(Past(cpu.instr_complete, clocks=2)):
+                    m.d.ph2 += data.int_return_pc.eq(data.state._pc)
+
+                with m.If(Past(cpu.instr_complete)):
+                    with m.If(~Past(data.state._mstatus)[MStatus.MIE]):
+                        m.d.comb += Assert(~data.state.trap)
+                    with m.Else():
+                        with m.If(Past(cpu.seq.time_irq) & (Past(data.state._mie)[MInterrupt.MTI])):
+                            m.d.comb += Assert(data.state.trap)
+                        with m.Elif(Past(cpu.seq.ext_irq) & (Past(data.state._mie)[MInterrupt.MEI])):
+                            m.d.comb += Assert(data.state.trap)
+                        with m.Else():
+                            m.d.comb += Assert(~data.state.trap)
+
+                with m.If(Rose(cpu.seq.state._trap_svc)):
+                    data.verify_irq(m)
+
+            # This section is for added asserts to make prove mode work.
+            # The problem is that prove mode could start on any phase.
+            # That is, given a depth of N, prove mode will start with a
+            # bad state, and show a trace of the previous N steps which
+            # legitimately leads to that bad state -- if that first step
+            # were actually valid, which it wouldn't be if that step were
+            # preceded by all the steps necessary to start an instruction.
+            # So I need to rule out those weird first steps.
+
+        with m.Else():  # initialize
+            m.d.comb += Assume(~cpu.seq.time_irq)
+            m.d.comb += Assume(~cpu.seq.ext_irq)
+
+            init_regs = [None] + [AnyConst(32) for _ in range(1, 32)]
+            init_pc = AnyConst(32)
+            init_mtvec = AnyConst(32)
+            init_mcause = AnyConst(32)
+            init_mtval = AnyConst(32)
+            init_mepc = AnyConst(32)
+            init_mstatus = AnyConst(32)
+            init_mie = AnyConst(32)
+
+            m.d.comb += Assume(init_pc[:2] == 0)
+            m.d.comb += Assume(init_mepc[:2] == 0)
+            m.d.comb += [
+                cpu.seq._init_pc.eq(init_pc),
+                cpu.seq._init_mtvec.eq(init_mtvec),
+                cpu.seq._init_mcause.eq(init_mcause),
+                cpu.seq._init_mtval.eq(init_mtval),
+                cpu.seq._init_mepc.eq(init_mepc),
+                cpu.seq._init_mstatus.eq(init_mstatus),
+                cpu.seq._init_mie.eq(init_mie),
+            ]
+            for i in range(1, 32):
+                m.d.comb += cpu.regs._init_reg[i].eq(init_regs[i])
+            m.d.comb += cpu.regs._init_reg[0].eq(0)
+
+            # Initialize registers
             m.d.ph2 += [
                 data.did_mem_rd.eq(0),
                 data.did_mem_wr.eq(0),
-                data.did_csr_rd.eq(0),  # These can get overridden later
-                data.did_csr_wr.eq(0),
             ]
-
-        for i in range(1, 32):
-            m.d.comb += data.regs_after[i].eq(cpu.regs._x_bank._mem[i])
-        m.d.comb += data.regs_after[0].eq(0)
-
-        # If we read or write memory outside the first machine cycle, save it.
-        # But complain if we do more than only one read or one write.
-        m.d.comb += Assert(~(data.did_mem_rd & data.did_mem_wr))
-
-        with m.If((mcycle > 0) & cpu.mem_rd & (phase_count == 1) & ~cpu.fatal):
-            m.d.comb += Assert(~data.did_mem_rd & ~data.did_mem_wr)
-            m.d.ph2 += data.did_mem_rd.eq(1)
-            m.d.ph2 += data.memaddr_accessed.eq(cpu.memaddr)
-            m.d.ph2 += data.mem_rd_data.eq(cpu.memdata_rd)
-
-        # Yes, phase 1. The fatal signal goes high on phase 2,
-        # because we know the memory we're going to write to on
-        # phase 1. The memory may not actually get written until
-        # phase 4, but the address and data are already set up now.
-        with m.Elif((mcycle > 0) & cpu.mem_wr & (phase_count == 1) & ~cpu.fatal):
-            m.d.comb += Assert(~data.did_mem_rd & ~data.did_mem_wr)
-            m.d.ph2 += data.did_mem_wr.eq(1)
-            m.d.ph2 += data.memaddr_accessed.eq(cpu.memaddr)
-            m.d.ph2 += data.mem_wr_data.eq(cpu.memdata_wr)
-            m.d.ph2 += data.mem_wr_mask.eq(cpu.mem_wr_mask)
-
-        with m.If((mcycle == 0) & (cpu.z_to_csr | cpu.csr_to_x) & (phase_count == 1) & ~cpu.fatal):
-            m.d.ph2 += [
-                data.did_csr_rd.eq(cpu.csr_to_x),
-                data.did_csr_wr.eq(cpu.z_to_csr),
-                data.csr_accessed.eq(cpu.csr_num),
-                data.csr_rd_data.eq(cpu.x_bus),
-                data.csr_wr_data.eq(cpu.z_bus),
-            ]
-
-        # Covers
-        m.d.comb += Cover(cpu.instr_complete)
-        m.d.comb += Cover(cpu.seq.state.trap)
-        # m.d.comb += Cover(Past(cpu.seq.trap, clocks=12))
-        # m.d.comb += Cover(Past(cpu.seq.fatal, clocks=12))
-        # m.d.comb += Cover(cpu.seq._trap_svc)
-        # m.d.comb += Cover(cpu.seq._trap_cause == TrapCause.INT_MACH_TIMER)
-        m.d.comb += Cover(Past(cpu.seq.time_irq, 18) &
-                          Past(cpu.seq.instr_complete, 18) &
-                          ~Past(cpu.seq.state._exception, 18))
-
-        # Asserts and Assumptions based on which instructions we're verifying.
-        cycles = {
-            "op": 1,
-            "op_imm": 1,
-            "lui": 1,
-            "auipc": 1,
-            "jal": 2,
-            "jalr": 2,
-            "branch": 2,
-            "csr": 2,
-            "lb": 3,
-            "lbu": 3,
-            "lh": 3,
-            "lhu": 3,
-            "lw": 3,
-            "sb": 3,
-            "sh": 3,
-            "sw": 3,
-        }
-        opcodes = {
-            "op": Opcode.OP,
-            "op_imm": Opcode.OP_IMM,
-            "lui": Opcode.LUI,
-            "auipc": Opcode.AUIPC,
-            "jal": Opcode.JAL,
-            "jalr": Opcode.JALR,
-            "branch": Opcode.BRANCH,
-            "csr": Opcode.SYSTEM,
-            "lb": Opcode.LOAD,
-            "lbu": Opcode.LOAD,
-            "lh": Opcode.LOAD,
-            "lhu": Opcode.LOAD,
-            "lw": Opcode.LOAD,
-            "sb": Opcode.STORE,
-            "sh": Opcode.STORE,
-            "sw": Opcode.STORE,
-        }
-        widths = {
-            "lb": MemAccessWidth.B,
-            "lbu": MemAccessWidth.BU,
-            "lh": MemAccessWidth.H,
-            "lhu": MemAccessWidth.HU,
-            "lw": MemAccessWidth.W,
-            "sb": MemAccessWidth.B,
-            "sh": MemAccessWidth.H,
-            "sw": MemAccessWidth.W,
-        }
-        if mode in cycles:
-            with m.If(phase_count == 5):
-                m.d.comb += Assume(cpu.instr_complete ==
-                                   (mcycle == cycles[mode]-1))
-            m.d.comb += Assert(mcycle < cycles[mode])
-
-        if mode in widths:
-            with m.If((mcycle == 0) & (phase_count == 2)):
-                m.d.comb += Assume(data.funct3 == widths[mode])
-
-        if mode in opcodes:
-            m.d.comb += Assume(~cpu.seq.time_irq)
-            m.d.comb += Assume(~cpu.seq.ext_irq)
-            m.d.comb += Assume(~cpu.fatal)
-            m.d.comb += Assume(~cpu.seq.state.trap)
-            m.d.comb += Assume(~cpu.seq.state._exception)
-            m.d.comb += Assume(~cpu.seq.state._reg_time_irq)
-            m.d.comb += Assume(~cpu.seq.state._reg_ext_irq)
-            with m.If((mcycle == 0) & (phase_count == 2)):
-                m.d.comb += Assume(data.opcode == opcodes[mode])
-            # Formal verification just after we've completed an instruction.
-            with m.If(Past(cpu.instr_complete)):
-                data.verify_instr(m)
-
-        if mode == "fatal":
-            # This will only make fatal conditions happen.
-            m.d.comb += Assume(~cpu.seq.time_irq)
-            m.d.comb += Assume(~cpu.seq.ext_irq)
-            m.d.comb += Assume(~cpu.seq.state._reg_time_irq)
-            m.d.comb += Assume(~cpu.seq.state._reg_ext_irq)
-            # m.d.comb += Assume(cpu.instr_complete == 0)
-            # with m.If(cpu.fatal):
-            data.verify_fatal(m)
-
-        if mode == "irq":
-            m.d.comb += Assume(~cpu.fatal)
-            m.d.comb += Assume(~cpu.seq.state._exception)
-            with m.If(cpu.instr_complete):
-                m.d.comb += Assume(cpu.seq.time_irq | cpu.seq.ext_irq)
-                m.d.ph1 += data.did_time_irq.eq(cpu.seq.time_irq)
-                m.d.ph1 += data.did_ext_irq.eq(cpu.seq.ext_irq)
-
-            with m.If(Past(cpu.instr_complete, clocks=2)):
-                m.d.ph2 += data.int_return_pc.eq(data.state._pc)
-
-            with m.If(Past(cpu.instr_complete) & ~Past(data.state._mstatus)[MStatus.MIE]):
-                m.d.comb += Assert(~data.state.trap)
-
-            with m.If(Rose(cpu.seq.state._trap_svc)):
-                data.verify_irq(m)
+            for i in range(1, 32):
+                m.d.ph2 += data.regs_before[i].eq(init_regs[i])
+            m.d.ph2 += data.regs_before[0].eq(0)
 
         sync_clk = ClockSignal("sync")
         sync_rst = ResetSignal("sync")
         m.d.comb += Assume(sync_clk == ~Past(sync_clk))
         m.d.comb += Assume(~sync_rst)
 
-        # Had to add _mtval, _mepc and _mcause because they were silently optimized out
-        return m, [sync_clk, cpu.memdata_rd, cpu.csr_rd_data,
-                   cpu.seq.state._mtval, cpu.seq.state._mcause,
-                   cpu.seq.state._mepc, cpu.seq.time_irq, cpu.seq.ext_irq]
+        return m, [sync_clk, cpu.memdata_rd, cpu.csr_rd_data, cpu.seq.time_irq, cpu.seq.ext_irq]
 
 
 if __name__ == "__main__":

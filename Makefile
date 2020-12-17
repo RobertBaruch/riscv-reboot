@@ -3,7 +3,7 @@
 
 ALL1 := op op_imm lui auipc
 ALL2 := jal jalr branch csr
-ALL3 := lb lbu lh lhu lw sb sh sw fatal
+ALL3 := lb lbu lh lhu lw sb sh sw fatal irq
 BMC1 := $(patsubst %,%-bmc,$(ALL1))
 BMC2 := $(patsubst %,%-bmc,$(ALL2))
 BMC3 := $(patsubst %,%-bmc,$(ALL3))

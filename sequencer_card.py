@@ -10,6 +10,7 @@ from nmigen.asserts import Assert, Assume, Cover, Stable, Past
 
 from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
 from consts import Opcode, OpcodeFormat, SystemFunc, TrapCause, PrivFunc, MStatus
+from consts import MInterrupt
 from consts import InstrReg
 from transparent_latch import TransparentLatch
 from util import main
@@ -43,11 +44,6 @@ class SequencerState:
         self._tmp = Signal(32)
         self.reg_page = Signal()
 
-        # Registered version of time_irq (on ph1)
-        self._reg_time_irq = Signal()
-        # Registered version of ext_irq (on ph1)
-        self._reg_ext_irq = Signal()
-
         # Trap handling
         # Goes high when we are handling a trap condition,
         # but not yet in the trap routine. See _trap_svc.
@@ -63,8 +59,12 @@ class SequencerState:
         self._mcause = Signal(32)
         self._mepc = Signal(32)
         self._mtval = Signal(32)
-        # Starts with interrupts disabled
+        # Starts with interrupts globally disabled
         self._mstatus = Signal(32)
+        # Specific interrupts enable
+        self._mie = Signal(32)
+        # Interrupts pending
+        self._mip = Signal(32)
 
 
 class SequencerCard(Elaboratable):
@@ -85,6 +85,22 @@ class SequencerCard(Elaboratable):
 
     def __init__(self):
         self.state = SequencerState()
+
+        # This signal is only used during formal verification to
+        # prevent the sequencer from doing anything. It's used so
+        # that initial values can be put into the state registers.
+        # The signal should be released on ph1.
+        #
+        # During init, registers are loaded with initial values.
+        self._initialize = Signal()
+        self._init_pc = Signal(32)
+        self._init_mtvec = Signal(32)
+        self._init_mcause = Signal(32)
+        self._init_mtval = Signal(32)
+        self._init_mepc = Signal(32)
+        self._init_mstatus = Signal(32)
+        self._init_mie = Signal(32)
+        self._init_mip = Signal(32)
 
         # A clock-based signal, high only at the end of a machine
         # cycle (i.e. phase 5, the very end of the write phase).
@@ -206,7 +222,6 @@ class SequencerCard(Elaboratable):
 
         # Instruction latch
         m.submodules += self._instr_latch
-        latch_instr = Signal()
 
         # Defaults
         m.d.comb += [
@@ -253,35 +268,53 @@ class SequencerCard(Elaboratable):
         ]
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
 
+        with m.If(~self._initialize):
+            self.process(m)
+        with m.Else():
+            m.d.ph1 += [
+                self.state._pc.eq(self._init_pc),
+                self.state._mtvec.eq(self._init_mtvec),
+                self.state._mcause.eq(self._init_mcause),
+                self.state._mtval.eq(self._init_mtval),
+                self.state._mepc.eq(self._init_mepc),
+                self.state._mstatus.eq(self._init_mstatus),
+                self.state._mie.eq(self._init_mie),
+                self.state._mip.eq(self._init_mip),
+            ]
+
+        return m
+
+    def process(self, m: Module):
         # Latch the time and ext irqs. This cues them up for handling
         # when we're about to load an instruction (but not in a trap routine,
         # and not if interrupts are disabled).
         #
         # These get reset once the trap handler runs.
         #
-        # TODO: Determine if disabling interrupts clearing
-        # pending interrupts is correct.
-        #
-        # TODO: What happens if an interrupt routine re-enables MIE?
-        # That seems like a bad idea because there's no such thing as
-        # a nested interrupt. I guess you get what you deserve? Or couldn't
-        # we just say that within an interrupt, enabling interrupts has no
-        # effect? Or allows interrupts to go pending? The code as written
-        # allows the interrupt to go pending.
-        #
-        # I think this is why knowing whether we're in a trap routine is
-        # important. This is self.state._trap_svc.
-        #
         # The time irq always has higher priority than the ext irq.
+        #
+        # TODO: Should we make this triggered on the interrupt signals
+        # themselves?
         with m.If(~self.state.trap):
             with m.If(self.state._mstatus[MStatus.MIE]):
-                with m.If(~self.state._reg_time_irq):
-                    m.d.ph1 += self.state._reg_time_irq.eq(self.time_irq)
-                with m.If(~self.state._reg_ext_irq):
-                    m.d.ph1 += self.state._reg_ext_irq.eq(self.ext_irq)
+
+                with m.If(self.state._mie[MInterrupt.MTI]):
+                    with m.If(~self.state._mip[MInterrupt.MTI]):
+                        m.d.ph1 += self.state._mip[MInterrupt.MTI].eq(
+                            self.time_irq)
+                with m.Else():
+                    m.d.ph1 += self.state._mip[MInterrupt.MTI].eq(0)
+
+                with m.If(self.state._mie[MInterrupt.MEI]):
+                    with m.If(~self.state._mip[MInterrupt.MEI]):
+                        m.d.ph1 += self.state._mip[MInterrupt.MEI].eq(
+                            self.ext_irq)
+                with m.Else():
+                    m.d.ph1 += self.state._mip[MInterrupt.MEI].eq(0)
+
             with m.Else():
-                m.d.ph1 += self.state._reg_time_irq.eq(0)
-                m.d.ph1 += self.state._reg_ext_irq.eq(0)
+                m.d.ph1 += self.state._mip[MInterrupt.MTI].eq(0)
+                m.d.ph1 += self.state._mip[MInterrupt.MEI].eq(0)
 
         with m.If(self._is_last_instr_cycle):
             m.d.comb += self.instr_complete.eq(self.mcycle_end)
@@ -290,12 +323,19 @@ class SequencerCard(Elaboratable):
             with m.If(~self._x_to_memaddr & ~self._z_to_memaddr & ~self._memdata_to_memaddr):
                 m.d.comb += self._pc_plus_4_to_memaddr.eq(1)
 
+        is_interrupt_pending = Signal()
+        m.d.comb += is_interrupt_pending.eq(
+            (self.time_irq & self.state._mie[MInterrupt.MTI]) |
+            self.state._mip[MInterrupt.MTI] |
+            (self.ext_irq & self.state._mie[MInterrupt.MEI]) |
+            self.state._mip[MInterrupt.MEI]
+        )
         # We only check interrupts once we're about to load an instruction but we're not already
         # servicing an interrupt.
         is_interrupted = all_true(self.instr_complete,
                                   ~self.state.trap,
                                   ~self.state._trap_svc,
-                                  self.time_irq | self.ext_irq,
+                                  is_interrupt_pending,
                                   self.state._mstatus[MStatus.MIE])
 
         # Because we don't support the C (compressed instructions)
@@ -316,6 +356,7 @@ class SequencerCard(Elaboratable):
             m.d.comb += self.mem_rd.eq(1)
 
         read_pulse = ClockSignal("ph1") & ~ClockSignal("ph2")
+        latch_instr = Signal()
         m.d.comb += [
             latch_instr.eq(read_pulse & self._load_instr),
             self.state._instr.eq(self._instr_latch.data_out),
@@ -372,6 +413,11 @@ class SequencerCard(Elaboratable):
                     m.d.ph1 += self.state._mtval.eq(self.data_z_in)
                 with m.Case(CSRAddr.MSTATUS):
                     m.d.ph1 += self.state._mstatus.eq(self.data_z_in)
+                with m.Case(CSRAddr.MIE):
+                    m.d.ph1 += self.state._mie.eq(self.data_z_in)
+                with m.Case(CSRAddr.MIP):
+                    # Pending machine interrupts are not writable.
+                    m.d.ph1 += self.state._mip.eq(self.data_z_in & 0xFFFFF777)
 
         # Updates to multiplexers
         with m.If(self._pc_to_x):
@@ -390,6 +436,10 @@ class SequencerCard(Elaboratable):
                     m.d.comb += self.data_x_out.eq(self.state._mtval)
                 with m.Case(CSRAddr.MSTATUS):
                     m.d.comb += self.data_x_out.eq(self.state._mstatus)
+                with m.Case(CSRAddr.MIE):
+                    m.d.comb += self.data_x_out.eq(self.state._mie)
+                with m.Case(CSRAddr.MIP):
+                    m.d.comb += self.data_x_out.eq(self.state._mip)
 
         with m.If(self._imm_to_y):
             m.d.comb += self.data_y_out.eq(self._imm)
@@ -495,8 +545,6 @@ class SequencerCard(Elaboratable):
                     with m.Default():
                         self.handle_illegal_instr(m)
 
-        return m
-
     def set_exception(self, m: Module, exc: TrapCause, mtval: Signal):
         m.d.ph2 += self.state._exception.eq(1)
         m.d.ph2 += self.state._trap_cause.eq(exc)
@@ -576,22 +624,18 @@ class SequencerCard(Elaboratable):
         """
         with m.If(self.state._instr_phase == 0):
             with m.If(~self.state._exception):
-                with m.If(self.state._reg_time_irq):
+                with m.If(self.state._mip[MInterrupt.MTI]):
                     m.d.ph2 += self.state._trap_cause.eq(
                         TrapCause.INT_MACH_TIMER)
-                with m.Elif(self.state._reg_ext_irq):
+                    m.d.ph1 += self.state._mip[MInterrupt.MTI].eq(0)
+                with m.Elif(self.state._mip[MInterrupt.MEI]):
                     m.d.ph2 += self.state._trap_cause.eq(
                         TrapCause.INT_MACH_EXTERNAL)
+                    m.d.ph1 += self.state._mip[MInterrupt.MEI].eq(0)
 
                 m.d.ph1 += self.state._mepc.eq(self.state._pc)
 
             m.d.ph1 += self.state._mcause.eq(self.state._trap_cause)
-
-            # Clear the registered irqs.
-            with m.If(self.state._reg_time_irq):
-                m.d.ph1 += self.state._reg_time_irq.eq(0)
-            with m.Elif(self.state._reg_ext_irq):
-                m.d.ph1 += self.state._reg_ext_irq.eq(0)
 
             is_int = self.state._trap_cause[31]
             vec_mode = self.state._mtvec[:2]
@@ -1389,7 +1433,7 @@ class SequencerCard(Elaboratable):
             self.state._mstatus[MStatus.MPIE])
         m.d.ph1 += self.state._mstatus[MStatus.MPIE].eq(1)
 
-    @classmethod
+    @ classmethod
     def formal(cls) -> Tuple[Module, List[Signal]]:
         """Formal verification for the sequencer."""
         m = Module()
