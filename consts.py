@@ -156,16 +156,16 @@ class CSRAddr(IntEnum):
 @unique
 class MStatus(IntEnum):
     """Bits for mstatus."""
-    MIE = 3   # Machine interrupts global enable
-    MPIE = 7  # Machine interrupts global enable (previous value)
+    MIE = 3   # Machine interrupts global enable                  (00000008)
+    MPIE = 7  # Machine interrupts global enable (previous value) (00000080)
 
 
 @unique
 class MInterrupt(IntEnum):
     """Bits for mie and mip."""
-    MSI = 3   # Machine software interrupt enabled/pending
-    MTI = 7   # Machine timer interrupt enabled/pending
-    MEI = 11  # Machine external interrupt enabled/pending
+    MSI = 3   # Machine software interrupt enabled/pending (00000008)
+    MTI = 7   # Machine timer interrupt enabled/pending    (00000080)
+    MEI = 11  # Machine external interrupt enabled/pending (00000800)
 
 
 @unique

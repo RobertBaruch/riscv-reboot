@@ -952,14 +952,16 @@ class FormalCPU(Elaboratable):
                 ]
             with m.Elif(self.instr == ECALL):
                 m.d.comb += [
-                    Assert(self.state_before._mepc == self.state_before._pc),
+                    Assert(self.state_before._mepc == (
+                        self.state_before._pc+4)[:32]),
                     Assert(self.state._mcause ==
                            TrapCause.EXC_ECALL_FROM_MACH_MODE),
                     Assert(self.state._pc == base),
                 ]
             with m.Elif(self.instr == EBREAK):
                 m.d.comb += [
-                    Assert(self.state_before._mepc == self.state_before._pc),
+                    Assert(self.state_before._mepc == (
+                        self.state_before._pc+4)[:32]),
                     Assert(self.state._mcause == TrapCause.EXC_BREAKPOINT),
                     Assert(self.state._pc == base),
                 ]
@@ -1181,8 +1183,9 @@ class FormalCPU(Elaboratable):
         """Creates the clock domains and signals."""
         ph1 = ClockDomain("ph1")
         ph2 = ClockDomain("ph2")
+        ph2w = ClockDomain("ph2w")
 
-        m.domains += [ph1, ph2]
+        m.domains += [ph1, ph2, ph2w]
 
         # Generate the ph1 and ph2 clocks.
         phase_count = Signal(3, reset=0, reset_less=True)
@@ -1203,6 +1206,8 @@ class FormalCPU(Elaboratable):
                 m.d.comb += ph2.clk.eq(0)
             with m.Default():
                 m.d.comb += ph2.clk.eq(1)
+
+        m.d.comb += ph2w.clk.eq(phase_count != 4)
 
         m.d.comb += mcycle_end.eq(phase_count == 5)
 
@@ -1313,6 +1318,7 @@ class FormalCPU(Elaboratable):
         m.d.comb += Cover(Past(cpu.seq.time_irq, 18) &
                           Past(cpu.seq.instr_complete, 18) &
                           ~Past(cpu.seq.state._exception, 18))
+        m.d.comb += Cover(Past(cpu.seq.state._instr, 18) == ECALL)
 
         # Asserts and Assumptions based on which instructions we're verifying.
         cycles = {
@@ -1446,44 +1452,37 @@ class FormalCPU(Elaboratable):
             m.d.comb += Assume(~cpu.fatal)
             m.d.comb += Assume(~cpu.seq.state._exception)
 
-            # I only want to check an interrupt request at the end of an instruction.
-            with m.If(cpu.instr_complete & ~Past(cpu.seq.state.trap)):
+            with m.If((phase_count == 4) & ~cpu.seq.state.trap & data.state._mstatus[MStatus.MIE]):
                 m.d.comb += Assume(cpu.seq.time_irq | cpu.seq.ext_irq)
-                m.d.ph1 += data.did_time_irq.eq(
-                    cpu.seq.time_irq & data.state._mie[MInterrupt.MTI] & data.state._mstatus[MStatus.MIE])
-                m.d.ph1 += data.did_ext_irq.eq(
-                    cpu.seq.ext_irq & data.state._mie[MInterrupt.MEI] & data.state._mstatus[MStatus.MIE])
-
+                with m.If(data.state._mie[MInterrupt.MTI]):
+                    m.d.ph2 += data.did_time_irq.eq(data.did_time_irq |
+                                                    cpu.seq.time_irq)
+                with m.If(data.state._mie[MInterrupt.MEI]):
+                    m.d.ph2 += data.did_ext_irq.eq(data.did_ext_irq |
+                                                   cpu.seq.ext_irq)
             with m.Else():
                 m.d.comb += Assume(~cpu.seq.time_irq & ~cpu.seq.ext_irq)
+
+            # Whoops, interrupts we issued were cancelled.
+            with m.If(~cpu.seq.state.trap):
+                with m.If(~data.state._mstatus[MStatus.MIE]):
+                    m.d.ph2 += data.did_time_irq.eq(0)
+                    m.d.ph2 += data.did_ext_irq.eq(0)
+                with m.If(~data.state._mie[MInterrupt.MTI]):
+                    m.d.ph2 += data.did_time_irq.eq(0)
+                with m.If(~data.state._mie[MInterrupt.MEI]):
+                    m.d.ph2 += data.did_ext_irq.eq(0)
 
             with m.If(Past(cpu.instr_complete, clocks=2) &
                       ~Past(cpu.seq.state.trap, 2)):
                 m.d.ph2 += data.int_return_pc.eq(data.state._pc)
 
-            with m.If(Past(cpu.instr_complete) &
-                      ~Past(cpu.seq.state.trap)):
-                with m.If(~Past(data.state._mstatus)[MStatus.MIE]):
-                    m.d.comb += Assert(~data.state.trap)
-                with m.Else():
-                    with m.If(Past(cpu.seq.time_irq) & (Past(data.state._mie)[MInterrupt.MTI])):
-                        m.d.comb += Assert(data.state.trap)
-                    with m.Elif(Past(cpu.seq.ext_irq) & (Past(data.state._mie)[MInterrupt.MEI])):
-                        m.d.comb += Assert(data.state.trap)
-                    with m.Else():
-                        m.d.comb += Assert(~data.state.trap)
+            with m.If(Past(cpu.instr_complete) & ~Past(cpu.seq.state.trap)):
+                with m.If(data.did_time_irq | data.did_ext_irq):
+                    m.d.comb += Assert(data.state.trap)
 
             with m.If(Fell(cpu.seq.state.trap)):
                 data.verify_irq(m)
-
-        # This section is for added asserts to make prove mode work.
-        # The problem is that prove mode could start on any phase.
-        # That is, given a depth of N, prove mode will start with a
-        # bad state, and show a trace of the previous N steps which
-        # legitimately leads to that bad state -- if that first step
-        # were actually valid, which it wouldn't be if that step were
-        # preceded by all the steps necessary to start an instruction.
-        # So I need to rule out those weird first steps.
 
         with m.If(Initial()):
             m.d.comb += Assume(~cpu.seq.time_irq)
