@@ -53,7 +53,6 @@ class SequencerState:
 
         # Raised when an exception occurs.
         self._exception = Signal()
-        self._trap_cause = Signal(32)  # Written to _mcause on ph2
 
         self._mtvec = Signal(32, attrs=attrs)
         self._mcause = Signal(32, attrs=attrs)
@@ -525,7 +524,7 @@ class SequencerCard(Elaboratable):
 
     def set_exception(self, m: Module, exc: TrapCause, mtval: Signal, fatal: bool = True):
         m.d.ph2 += self.state._exception.eq(1)
-        m.d.ph2w += self.state._mcause.eq(exc)  # _trap_cause
+        m.d.ph2w += self.state._mcause.eq(exc)
         m.d.ph2w += self.state._mtval.eq(mtval)
         m.d.ph2w += self.state._mepc.eq(
             self.state._pc if fatal else self._pc_plus_4)
@@ -599,10 +598,9 @@ class SequencerCard(Elaboratable):
 
         For fatals, we store the cause and then halt.
 
-        TODO: Can we turn this into multiplex code?
+        TODO: This code is horrible because some of it doesn't use multiplexers.
         """
         is_int = ~self.state._exception
-        int_cause = Signal(32)
 
         fatal = Signal()
         m.d.comb += fatal.eq(all_true(~is_int,
@@ -612,18 +610,12 @@ class SequencerCard(Elaboratable):
 
         with m.If(is_int):
             with m.If(self.state._mip[MInterrupt.MEI]):
-                # m.d.comb += int_cause.eq(TrapCause.INT_MACH_EXTERNAL)
                 m.d.ph2w += self.state._mcause.eq(TrapCause.INT_MACH_EXTERNAL)
                 m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
             with m.Elif(self.state._mip[MInterrupt.MTI]):
-                # m.d.comb += int_cause.eq(TrapCause.INT_MACH_TIMER)
                 m.d.ph2w += self.state._mcause.eq(TrapCause.INT_MACH_TIMER)
                 m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
             m.d.ph2w += self.state._mepc.eq(self.state._pc)
-            # m.d.ph2w += self.state._mcause.eq(int_cause)
-
-        # with m.Else():
-        #     m.d.ph2w += self.state._mcause.eq(self.state._trap_cause)
 
         with m.If(fatal):
             m.d.comb += self._next_instr_phase.eq(0)
@@ -1425,10 +1417,26 @@ class SequencerCard(Elaboratable):
         m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(1)
 
     def handle_ECALL(self, m: Module):
+        """Handles the ECALL instruction.
+
+        Note that normally, ECALL is used from a lower privelege mode, which stores
+        the PC of the instruction in the appropriate lower EPC CSR (e.g. SEPC or UEPC).
+        This allows interrupts to be handled during the call, because we're in a higher
+        privelege level. However, in machine mode, there is no higher privelege level,
+        so we have no choice but to disable interrupts for an ECALL.
+        """
         self.set_exception(
             m, TrapCause.EXC_ECALL_FROM_MACH_MODE, mtval=self.state._pc, fatal=False)
 
     def handle_EBREAK(self, m: Module):
+        """Handles the EBREAK instruction.
+
+        Note that normally, EBREAK is used from a lower privelege mode, which stores
+        the PC of the instruction in the appropriate lower EPC CSR (e.g. SEPC or UEPC).
+        This allows interrupts to be handled during the call, because we're in a higher
+        privelege level. However, in machine mode, there is no higher privelege level,
+        so we have no choice but to disable interrupts for an EBREAK.
+        """
         self.set_exception(
             m, TrapCause.EXC_BREAKPOINT, mtval=self.state._pc, fatal=False)
 

@@ -1258,7 +1258,6 @@ class FormalCPU(Elaboratable):
             m.d.ph2 += bef.trap.eq(state.trap)
             m.d.ph2 += bef._exception.eq(state._exception)
             m.d.ph2 += bef._mtvec.eq(state._mtvec)
-            m.d.ph2 += bef._trap_cause.eq(state._trap_cause)
             m.d.ph2 += bef._mcause.eq(state._mcause)
             m.d.ph2 += bef._mepc.eq(state._mepc)
             m.d.ph2 += bef._mtval.eq(state._mtval)
@@ -1314,7 +1313,6 @@ class FormalCPU(Elaboratable):
         m.d.comb += Cover(cpu.seq.state.trap)
         # m.d.comb += Cover(Past(cpu.seq.trap, clocks=12))
         # m.d.comb += Cover(Past(cpu.seq.fatal, clocks=12))
-        # m.d.comb += Cover(cpu.seq._trap_cause == TrapCause.INT_MACH_TIMER)
         m.d.comb += Cover(Past(cpu.seq.time_irq, 18) &
                           Past(cpu.seq.instr_complete, 18) &
                           ~Past(cpu.seq.state._exception, 18))
