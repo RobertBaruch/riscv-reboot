@@ -4,7 +4,7 @@
 # pylint: disable=W0212
 from typing import List, Tuple
 
-from nmigen import Signal, Module, Elaboratable, signed, ClockSignal, ClockDomain
+from nmigen import Signal, Module, Elaboratable, signed, ClockSignal, ClockDomain, Repl
 from nmigen.build import Platform
 from nmigen.asserts import Assert, Assume, Cover, Stable, Past
 
@@ -14,6 +14,8 @@ from consts import MInterrupt
 from consts import InstrReg
 from transparent_latch import TransparentLatch
 from util import main
+from IC_7416244 import IC_7416244
+from IC_GAL import IC_GAL_imm_format_decoder
 
 
 def all_true(*args):
@@ -87,7 +89,9 @@ class SequencerCard(Elaboratable):
     ph2w             |___|             |___|
     """
 
-    def __init__(self, ext_init: bool = False):
+    def __init__(self, ext_init: bool = False, chips: bool = False):
+        self.chips = chips
+
         self.state = SequencerState(ext_init)
 
         # A clock-based signal, high only at the end of a machine
@@ -537,6 +541,10 @@ class SequencerCard(Elaboratable):
 
     def decode_imm(self, m: Module):
         """Decodes the immediate value out of the instruction."""
+        if (self.chips):
+            self.decode_imm_chips(m)
+            return
+
         with m.Switch(self._imm_format):
             # Format I instructions. Surprisingly, SLTIU (Set if Less Than
             # Immediate Unsigned) actually does sign-extend the immediate
@@ -592,6 +600,124 @@ class SequencerCard(Elaboratable):
                     self._imm[0:5].eq(self.state._instr[15:]),
                     self._imm[5:].eq(0),
                 ]
+
+    def decode_imm_chips(self, m: Module):
+        buffs = [IC_7416244() for _ in range(12)]
+        gal = IC_GAL_imm_format_decoder()
+
+        m.submodules += buffs
+        m.submodules += gal
+
+        # Intermediate signals
+        i_n_oe = Signal()
+        s_n_oe = Signal()
+        u_n_oe = Signal()
+        b_n_oe = Signal()
+        j_n_oe = Signal()
+        sys_n_oe = Signal()
+
+        i_32 = Signal(32)
+        s_32 = Signal(32)
+        u_32 = Signal(32)
+        b_32 = Signal(32)
+        j_32 = Signal(32)
+        sys_32 = Signal(32)
+
+        oi_32 = Signal(32)
+        os_32 = Signal(32)
+        ou_32 = Signal(32)
+        ob_32 = Signal(32)
+        oj_32 = Signal(32)
+        osys_32 = Signal(32)
+
+        n_oe = [i_n_oe, s_n_oe, u_n_oe, b_n_oe, j_n_oe, sys_n_oe]
+        for i in range(6):
+            m.d.comb += buffs[i*2].n_oe0.eq(n_oe[i])
+            m.d.comb += buffs[i*2].n_oe1.eq(n_oe[i])
+            m.d.comb += buffs[i*2].n_oe2.eq(n_oe[i])
+            m.d.comb += buffs[i*2].n_oe3.eq(n_oe[i])
+            m.d.comb += buffs[i*2+1].n_oe0.eq(n_oe[i])
+            m.d.comb += buffs[i*2+1].n_oe1.eq(n_oe[i])
+            m.d.comb += buffs[i*2+1].n_oe2.eq(n_oe[i])
+            m.d.comb += buffs[i*2+1].n_oe3.eq(n_oe[i])
+
+        input32 = [i_32, s_32, u_32, b_32, j_32, sys_32]
+        for i in range(6):
+            m.d.comb += buffs[i*2].a0.eq(input32[i][0:4])
+            m.d.comb += buffs[i*2].a1.eq(input32[i][4:8])
+            m.d.comb += buffs[i*2].a2.eq(input32[i][8:12])
+            m.d.comb += buffs[i*2].a3.eq(input32[i][12:16])
+            m.d.comb += buffs[i*2+1].a0.eq(input32[i][16:20])
+            m.d.comb += buffs[i*2+1].a1.eq(input32[i][20:24])
+            m.d.comb += buffs[i*2+1].a2.eq(input32[i][24:28])
+            m.d.comb += buffs[i*2+1].a3.eq(input32[i][28:])
+
+        out32 = [oi_32, os_32, ou_32, ob_32, oj_32, osys_32]
+        for i in range(6):
+            m.d.comb += out32[i][0:4].eq(buffs[i*2].y0)
+            m.d.comb += out32[i][4:8].eq(buffs[i*2].y1)
+            m.d.comb += out32[i][8:12].eq(buffs[i*2].y2)
+            m.d.comb += out32[i][12:16].eq(buffs[i*2].y3)
+            m.d.comb += out32[i][16:20].eq(buffs[i*2+1].y0)
+            m.d.comb += out32[i][20:24].eq(buffs[i*2+1].y1)
+            m.d.comb += out32[i][24:28].eq(buffs[i*2+1].y2)
+            m.d.comb += out32[i][28:].eq(buffs[i*2+1].y3)
+
+        m.d.comb += gal.opcode.eq(self._opcode)
+        m.d.comb += i_n_oe.eq(gal.i_n_oe)
+        m.d.comb += s_n_oe.eq(gal.s_n_oe)
+        m.d.comb += u_n_oe.eq(gal.u_n_oe)
+        m.d.comb += b_n_oe.eq(gal.b_n_oe)
+        m.d.comb += j_n_oe.eq(gal.j_n_oe)
+        m.d.comb += sys_n_oe.eq(gal.sys_n_oe)
+
+        instr = self.state._instr
+
+        # Format I
+        m.d.comb += [
+            i_32[0:12].eq(instr[20:]),
+            i_32[12:].eq(Repl(instr[31], 32)),  # sext
+        ]
+
+        # Format S
+        m.d.comb += [
+            s_32[0:5].eq(instr[7:]),
+            s_32[5:11].eq(instr[25:]),
+            s_32[11:].eq(Repl(instr[31], 32)),  # sext
+        ]
+
+        # Format U
+        m.d.comb += [
+            u_32[0:12].eq(0),
+            u_32[12:].eq(instr[12:]),
+        ]
+
+        # Format B
+        m.d.comb += [
+            b_32[0].eq(0),
+            b_32[1:5].eq(instr[8:]),
+            b_32[5:11].eq(instr[25:]),
+            b_32[11].eq(instr[7]),
+            b_32[12:].eq(Repl(instr[31], 32)),  # sext
+        ]
+
+        # Format J
+        m.d.comb += [
+            j_32[0].eq(0),
+            j_32[1:11].eq(instr[21:]),
+            j_32[11].eq(instr[20]),
+            j_32[12:20].eq(instr[12:]),
+            j_32[20:].eq(Repl(instr[31], 32)),  # sext
+        ]
+
+        # Format SYS
+        m.d.comb += [
+            sys_32[0:5].eq(instr[15:]),
+            sys_32[5:].eq(0),
+        ]
+
+        m.d.comb += self._imm.eq(oi_32 | os_32 | ou_32 |
+                                 ob_32 | oj_32 | osys_32)
 
     def handle_trap(self, m: Module):
         """Adds trap handling logic.

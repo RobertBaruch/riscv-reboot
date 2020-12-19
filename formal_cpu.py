@@ -63,7 +63,7 @@ class FormalCPU(Elaboratable):
         self.regs = RegCard(ext_init=True)
         self.alu = AluCard()
         self.shifter = ShiftCard()
-        self.seq = SequencerCard(ext_init=True)
+        self.seq = SequencerCard(ext_init=True, chips=True)
 
     def elaborate(self, _: Platform) -> Module:
         """Implements a CPU."""
@@ -1392,12 +1392,11 @@ class FormalCPU(Elaboratable):
                         with m.If((data.funct3 == SystemFunc.CSRRW) |
                                   (data.funct3 == SystemFunc.CSRRS) |
                                   (data.funct3 == SystemFunc.CSRRC)):
-                            m.d.comb += Assume((data.rs1 == 1)
-                                               | (data.rs1 == 0))
+                            m.d.comb += Assume(data.rs1 <= 1)
                     else:
-                        m.d.comb += Assume((data.rs1 == 1) | (data.rs1 == 0))
+                        m.d.comb += Assume(data.rs1 <= 1)
                 if mode in ("op", "branch", "sh", "sw", "sb"):
-                    m.d.comb += Assume((data.rs2 == 2) | (data.rs2 == 0))
+                    m.d.comb += Assume(data.rs2 <= 2)
                 if mode in ("jal", "jalr", "lw", "lh", "lhu", "lb", "lbu"):
                     m.d.comb += Assume(data.rd <= 3)
             # Formal verification just after we've completed an instruction.

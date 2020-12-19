@@ -19,17 +19,41 @@ class Opcode(IntEnum):
     AUIPC = 0b001_0111     # 0x17
     JAL = 0b110_1111       # 0x6F
 
+    # Opcodes in other extensions, or reserved, or custom,
+    # or for other instruction lengths.
+    LOAD_FP = 0b000_0111    # 0x07
+    CUSTOM0 = 0b000_1011    # 0x0B
+    OP_IMM32 = 0b001_1011   # 0x1B
+    INSTR_48A = 0b001_1111  # 0x1F
+    STORE_FP = 0b010_0111   # 0x27
+    CUSTOM1 = 0b0101011
+    AMO = 0b0101111
+    OP32 = 0b0111011
+    MADD = 0b1000011
+    MSUB = 0b1000111
+    NMSUB = 0b1001011
+    NMADD = 0b1001111
+    OP_FP = 0b1010011
+    RESERVED0 = 0b1010111
+    CUSTOM2 = 0b1011011
+    INSTR_64 = 0b0111111
+    INSTR_48B = 0b1011111
+    RESERVED1 = 0b1101011
+    RESERVED2 = 0b1110111
+    CUSTOM3 = 0b1111011
+    INSTR_80 = 0b1111111
+
 
 @unique
 class OpcodeFormat(IntEnum):
     """Opcode formats."""
-    R = 0
-    I = 1
-    U = 2
-    S = 3
-    B = 4
-    J = 5
-    SYS = 6
+    R = 0    # OP
+    I = 1    # LOAD, MISC_MEM, OP_IMM
+    U = 2    # AUIPC, LUI
+    S = 3    # STORE
+    B = 4    # BRANCH
+    J = 5    # JAL, JALR
+    SYS = 6  # SYSTEM
 
 
 @unique
