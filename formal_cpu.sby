@@ -2,14 +2,14 @@
 cover
 --pycode-begin--
 for t in "bmc prove".split():
-  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal irq ecall".split():
+  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal1 fatal2 fatal3 fatal4 irq ecall".split():
     output(f"{o}-{t}")
 --pycode-end--
 
 [options]
 --pycode-begin--
 for t in "bmc prove".split():
-  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal irq ecall".split():
+  for o in "op op_imm lui auipc jal jalr branch csr lb lbu lh lhu lw sb sh sw fatal1 fatal2 fatal3 fatal4 irq ecall".split():
     output(f"{o}-{t}: mode {t}")
 --pycode-end--
 
@@ -31,7 +31,7 @@ if task != "cover":
     elif o in "lb lbu lh lhu lw sb sh sw irq".split():
         output(f"{o}-bmc: depth 19")
         output(f"{o}-prove: depth 18")
-    elif o in "fatal".split():
+    elif o in "fatal1 fatal2 fatal3 fatal4".split():
         output(f"{o}-bmc: depth 25")
         output(f"{o}-prove: depth 26")
 --pycode-end--

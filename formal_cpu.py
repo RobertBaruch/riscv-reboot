@@ -1414,13 +1414,29 @@ class FormalCPU(Elaboratable):
             with m.If(Fell(cpu.seq.state.trap)):
                 data.verify_instr(m)
 
-        if mode == "fatal":
+        if mode == "fatal" or mode == "fatal1" or mode == "fatal2" or mode == "fatal3" or mode == "fatal4":
             # This will only verify fatal conditions.
             m.d.comb += Assume(~cpu.seq.time_irq)
             m.d.comb += Assume(~cpu.seq.ext_irq)
             m.d.comb += Assume(~cpu.seq.state._mip[MInterrupt.MTI])
             m.d.comb += Assume(~cpu.seq.state._mip[MInterrupt.MEI])
             with m.If((mcycle == 0) & (phase_count == 2)):
+                if mode == "fatal1":
+                    m.d.comb += Assume(data.opcode == Opcode.LOAD)
+                elif mode == "fatal2":
+                    m.d.comb += Assume((data.opcode == Opcode.JAL)
+                                       | (data.opcode == Opcode.JALR))
+                elif mode == "fatal3":
+                    m.d.comb += Assume((data.opcode == Opcode.OP) |
+                                       (data.opcode == Opcode.OP_IMM) |
+                                       (data.opcode == Opcode.STORE))
+                elif mode == "fatal4":
+                    m.d.comb += Assume((data.opcode != Opcode.OP) &
+                                       (data.opcode != Opcode.OP_IMM) &
+                                       (data.opcode != Opcode.LOAD) &
+                                       (data.opcode != Opcode.STORE) &
+                                       (data.opcode != Opcode.JAL) &
+                                       (data.opcode != Opcode.JALR))
                 # These REALLY speed up the process.
                 with m.Switch(data.opcode):
                     with m.Case(Opcode.OP, Opcode.BRANCH, Opcode.STORE):

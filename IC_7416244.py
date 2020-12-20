@@ -109,5 +109,44 @@ class IC_7416244(Elaboratable):
         return m, [s.a0, s.a1, s.a2, s.a3, s.n_oe0, s.n_oe1, s.n_oe2, s.n_oe3]
 
 
+class IC_7432244(Elaboratable):
+    """A pair of 7416244s, with OEs tied together."""
+
+    def __init__(self):
+        self.a = Signal(32)
+        self.n_oe = Signal()
+        self.y = Signal(32)
+
+    def elaborate(self, _: Platform) -> Module:
+        """Implements the logic of a 32-bit buffer.
+
+        Made out of a pair of 7416244s.
+        """
+        m = Module()
+
+        buffs = [IC_7416244(), IC_7416244()]
+        m.submodules += buffs
+
+        for i in range(2):
+            m.d.comb += buffs[i].n_oe0.eq(self.n_oe)
+            m.d.comb += buffs[i].n_oe1.eq(self.n_oe)
+            m.d.comb += buffs[i].n_oe2.eq(self.n_oe)
+            m.d.comb += buffs[i].n_oe3.eq(self.n_oe)
+
+        for i in range(2):
+            m.d.comb += buffs[i].a0.eq(self.a[16*i:16*i+4])
+            m.d.comb += buffs[i].a1.eq(self.a[16*i+4:16*i+8])
+            m.d.comb += buffs[i].a2.eq(self.a[16*i+8:16*i+12])
+            m.d.comb += buffs[i].a3.eq(self.a[16*i+12:16*i+16])
+
+        for i in range(2):
+            m.d.comb += self.y[16*i:16*i+4].eq(buffs[i].y0)
+            m.d.comb += self.y[16*i+4:16*i+8].eq(buffs[i].y1)
+            m.d.comb += self.y[16*i+8:16*i+12].eq(buffs[i].y2)
+            m.d.comb += self.y[16*i+12:16*i+16].eq(buffs[i].y3)
+
+        return m
+
+
 if __name__ == "__main__":
     main(IC_7416244)
