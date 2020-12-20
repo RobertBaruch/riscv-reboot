@@ -14,7 +14,8 @@ from consts import MInterrupt
 from consts import InstrReg
 from transparent_latch import TransparentLatch
 from util import main
-from IC_7416244 import IC_7432244
+from IC_7416244 import IC_buff32, IC_mux32
+from IC_7416374 import IC_reg32_with_mux
 from IC_GAL import IC_GAL_imm_format_decoder
 
 
@@ -364,14 +365,31 @@ class SequencerCard(Elaboratable):
         with m.Elif(self._memdata_to_pc):
             m.d.ph1 += self.state._pc.eq(self.memdata_rd)
 
-        with m.If(self._pc_plus_4_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self._pc_plus_4)
-        with m.Elif(self._x_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self.data_x_in)
-        with m.Elif(self._z_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self.data_z_in)
-        with m.Elif(self._memdata_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self.memdata_rd)
+        if self.chips:
+            r = IC_reg32_with_mux(clk=m.d.ph1, N=4)
+            m.submodules += r
+            m.d.comb += self.state.memaddr.eq(r.q)
+
+            m.d.comb += r.d[0].eq(self._pc_plus_4)
+            m.d.comb += r.n_sel[0].eq(~self._pc_plus_4_to_memaddr)
+
+            m.d.comb += r.d[1].eq(self.data_x_in)
+            m.d.comb += r.n_sel[1].eq(~self._x_to_memaddr)
+
+            m.d.comb += r.d[2].eq(self.data_z_in)
+            m.d.comb += r.n_sel[2].eq(~self._z_to_memaddr)
+
+            m.d.comb += r.d[3].eq(self.memdata_rd)
+            m.d.comb += r.n_sel[3].eq(~self._memdata_to_memaddr)
+        else:
+            with m.If(self._pc_plus_4_to_memaddr):
+                m.d.ph1 += self.state.memaddr.eq(self._pc_plus_4)
+            with m.Elif(self._x_to_memaddr):
+                m.d.ph1 += self.state.memaddr.eq(self.data_x_in)
+            with m.Elif(self._z_to_memaddr):
+                m.d.ph1 += self.state.memaddr.eq(self.data_z_in)
+            with m.Elif(self._memdata_to_memaddr):
+                m.d.ph1 += self.state.memaddr.eq(self.memdata_rd)
 
         with m.If(self._z_to_memdata):
             m.d.ph1 += self.state.memdata_wr.eq(self.data_z_in)
@@ -401,26 +419,10 @@ class SequencerCard(Elaboratable):
                     m.d.ph2w += self.state._mip[12:].eq(self.data_z_in[12:])
 
         # Updates to multiplexers
-        with m.If(self._pc_to_x):
-            m.d.comb += self.data_x_out.eq(self.state._pc)
-        with m.Elif(self._memdata_to_x):
-            m.d.comb += self.data_x_out.eq(self.memdata_rd)
-        with m.Elif(self.csr_to_x):
-            with m.Switch(self.csr_num):
-                with m.Case(CSRAddr.MCAUSE):
-                    m.d.comb += self.data_x_out.eq(self.state._mcause)
-                with m.Case(CSRAddr.MTVEC):
-                    m.d.comb += self.data_x_out.eq(self.state._mtvec)
-                with m.Case(CSRAddr.MEPC):
-                    m.d.comb += self.data_x_out.eq(self.state._mepc)
-                with m.Case(CSRAddr.MTVAL):
-                    m.d.comb += self.data_x_out.eq(self.state._mtval)
-                with m.Case(CSRAddr.MSTATUS):
-                    m.d.comb += self.data_x_out.eq(self.state._mstatus)
-                with m.Case(CSRAddr.MIE):
-                    m.d.comb += self.data_x_out.eq(self.state._mie)
-                with m.Case(CSRAddr.MIP):
-                    m.d.comb += self.data_x_out.eq(self.state._mip)
+        if (self.chips):
+            self.multiplex_x_chips(m)
+        else:
+            self.multiplex_x(m)
 
         with m.If(self._imm_to_y):
             m.d.comb += self.data_y_out.eq(self._imm)
@@ -477,7 +479,10 @@ class SequencerCard(Elaboratable):
             self._alu_func[3].eq(self._funct7[5]),
             self._funct12.eq(self.state._instr[20:]),
         ]
-        self.decode_imm(m)
+        if (self.chips):
+            self.decode_imm_chips(m)
+        else:
+            self.decode_imm(m)
 
         # Handle the trap.
         with m.If(self.state.trap):
@@ -539,12 +544,54 @@ class SequencerCard(Elaboratable):
         self.set_exception(m, TrapCause.EXC_ILLEGAL_INSTR,
                            mtval=self.state._instr)
 
+    def multiplex_x(self, m: Module):
+        with m.If(self._pc_to_x):
+            m.d.comb += self.data_x_out.eq(self.state._pc)
+        with m.Elif(self._memdata_to_x):
+            m.d.comb += self.data_x_out.eq(self.memdata_rd)
+        with m.Elif(self.csr_to_x):
+            with m.Switch(self.csr_num):
+                with m.Case(CSRAddr.MCAUSE):
+                    m.d.comb += self.data_x_out.eq(self.state._mcause)
+                with m.Case(CSRAddr.MTVEC):
+                    m.d.comb += self.data_x_out.eq(self.state._mtvec)
+                with m.Case(CSRAddr.MEPC):
+                    m.d.comb += self.data_x_out.eq(self.state._mepc)
+                with m.Case(CSRAddr.MTVAL):
+                    m.d.comb += self.data_x_out.eq(self.state._mtval)
+                with m.Case(CSRAddr.MSTATUS):
+                    m.d.comb += self.data_x_out.eq(self.state._mstatus)
+                with m.Case(CSRAddr.MIE):
+                    m.d.comb += self.data_x_out.eq(self.state._mie)
+                with m.Case(CSRAddr.MIP):
+                    m.d.comb += self.data_x_out.eq(self.state._mip)
+
+    def multiplex_x_chips(self, m: Module):
+        mux = IC_mux32(9)
+        m.submodules += mux
+
+        inputs = [self.state._pc, self.memdata_rd, self.state._mcause, self.state._mtvec,
+                  self.state._mepc, self.state._mtval, self.state._mstatus, self.state._mie,
+                  self.state._mip]
+        selectors = [
+            self._pc_to_x,
+            self._memdata_to_x,
+            self.csr_to_x & (self.csr_num == CSRAddr.MCAUSE),
+            self.csr_to_x & (self.csr_num == CSRAddr.MTVEC),
+            self.csr_to_x & (self.csr_num == CSRAddr.MEPC),
+            self.csr_to_x & (self.csr_num == CSRAddr.MTVAL),
+            self.csr_to_x & (self.csr_num == CSRAddr.MSTATUS),
+            self.csr_to_x & (self.csr_num == CSRAddr.MIE),
+            self.csr_to_x & (self.csr_num == CSRAddr.MIP)
+        ]
+
+        for i in range(len(inputs)):
+            m.d.comb += mux.a[i].eq(inputs[i])
+            m.d.comb += mux.n_sel[i].eq(~selectors[i])
+        m.d.comb += self.data_x_out.eq(mux.y)
+
     def decode_imm(self, m: Module):
         """Decodes the immediate value out of the instruction."""
-        if (self.chips):
-            self.decode_imm_chips(m)
-            return
-
         with m.Switch(self._imm_format):
             # Format I instructions. Surprisingly, SLTIU (Set if Less Than
             # Immediate Unsigned) actually does sign-extend the immediate
@@ -602,73 +649,66 @@ class SequencerCard(Elaboratable):
                 ]
 
     def decode_imm_chips(self, m: Module):
-        buffs = [IC_7432244() for _ in range(6)]
+        mux = IC_mux32(6)
         gal = IC_GAL_imm_format_decoder()
 
-        m.submodules += buffs
+        m.submodules += mux
         m.submodules += gal
 
-        # Intermediate signals
-        n_oe = Signal(6)
-
-        for i in range(6):
-            m.d.comb += buffs[i].n_oe.eq(n_oe[i])
-
         m.d.comb += gal.opcode.eq(self._opcode)
-        m.d.comb += n_oe[0].eq(gal.i_n_oe)
-        m.d.comb += n_oe[1].eq(gal.s_n_oe)
-        m.d.comb += n_oe[2].eq(gal.u_n_oe)
-        m.d.comb += n_oe[3].eq(gal.b_n_oe)
-        m.d.comb += n_oe[4].eq(gal.j_n_oe)
-        m.d.comb += n_oe[5].eq(gal.sys_n_oe)
+        m.d.comb += mux.n_sel[0].eq(gal.i_n_oe)
+        m.d.comb += mux.n_sel[1].eq(gal.s_n_oe)
+        m.d.comb += mux.n_sel[2].eq(gal.u_n_oe)
+        m.d.comb += mux.n_sel[3].eq(gal.b_n_oe)
+        m.d.comb += mux.n_sel[4].eq(gal.j_n_oe)
+        m.d.comb += mux.n_sel[5].eq(gal.sys_n_oe)
 
         instr = self.state._instr
 
         # Format I
         m.d.comb += [
-            buffs[0].a[0:12].eq(instr[20:]),
-            buffs[0].a[12:].eq(Repl(instr[31], 32)),  # sext
+            mux.a[0][0:12].eq(instr[20:]),
+            mux.a[0][12:].eq(Repl(instr[31], 32)),  # sext
         ]
 
         # Format S
         m.d.comb += [
-            buffs[1].a[0:5].eq(instr[7:]),
-            buffs[1].a[5:11].eq(instr[25:]),
-            buffs[1].a[11:].eq(Repl(instr[31], 32)),  # sext
+            mux.a[1][0:5].eq(instr[7:]),
+            mux.a[1][5:11].eq(instr[25:]),
+            mux.a[1][11:].eq(Repl(instr[31], 32)),  # sext
         ]
 
         # Format U
         m.d.comb += [
-            buffs[2].a[0:12].eq(0),
-            buffs[2].a[12:].eq(instr[12:]),
+            mux.a[2][0:12].eq(0),
+            mux.a[2][12:].eq(instr[12:]),
         ]
 
         # Format B
         m.d.comb += [
-            buffs[3].a[0].eq(0),
-            buffs[3].a[1:5].eq(instr[8:]),
-            buffs[3].a[5:11].eq(instr[25:]),
-            buffs[3].a[11].eq(instr[7]),
-            buffs[3].a[12:].eq(Repl(instr[31], 32)),  # sext
+            mux.a[3][0].eq(0),
+            mux.a[3][1:5].eq(instr[8:]),
+            mux.a[3][5:11].eq(instr[25:]),
+            mux.a[3][11].eq(instr[7]),
+            mux.a[3][12:].eq(Repl(instr[31], 32)),  # sext
         ]
 
         # Format J
         m.d.comb += [
-            buffs[4].a[0].eq(0),
-            buffs[4].a[1:11].eq(instr[21:]),
-            buffs[4].a[11].eq(instr[20]),
-            buffs[4].a[12:20].eq(instr[12:]),
-            buffs[4].a[20:].eq(Repl(instr[31], 32)),  # sext
+            mux.a[4][0].eq(0),
+            mux.a[4][1:11].eq(instr[21:]),
+            mux.a[4][11].eq(instr[20]),
+            mux.a[4][12:20].eq(instr[12:]),
+            mux.a[4][20:].eq(Repl(instr[31], 32)),  # sext
         ]
 
         # Format SYS
         m.d.comb += [
-            buffs[5].a[0:5].eq(instr[15:]),
-            buffs[5].a[5:].eq(0),
+            mux.a[5][0:5].eq(instr[15:]),
+            mux.a[5][5:].eq(0),
         ]
 
-        m.d.comb += self._imm.eq(buffs[0].y | buffs[1].y | buffs[2].y |
-                                 buffs[3].y | buffs[4].y | buffs[5].y)
+        m.d.comb += self._imm.eq(mux.y)
 
     def handle_trap(self, m: Module):
         """Adds trap handling logic.

@@ -1,12 +1,13 @@
+"""Module containing stuff made out of 7416244 16-bit buffers."""
 # Disable pylint's "your name is too short" warning.
 # pylint: disable=C0103
 # Disable protected access warnings
 # pylint: disable=W0212
 from typing import List, Tuple
 
-from nmigen import Signal, Module, Elaboratable, signed, ClockSignal, ClockDomain, Array
+from nmigen import Signal, Module, Elaboratable, Array
 from nmigen.build import Platform
-from nmigen.asserts import Assert, Assume, Cover, Stable, Past
+from nmigen.asserts import Assert
 
 from util import main
 
@@ -109,7 +110,7 @@ class IC_7416244(Elaboratable):
         return m, [s.a0, s.a1, s.a2, s.a3, s.n_oe0, s.n_oe1, s.n_oe2, s.n_oe3]
 
 
-class IC_7432244(Elaboratable):
+class IC_buff32(Elaboratable):
     """A pair of 7416244s, with OEs tied together."""
 
     def __init__(self):
@@ -144,6 +145,38 @@ class IC_7432244(Elaboratable):
             m.d.comb += self.y[16*i+4:16*i+8].eq(buffs[i].y1)
             m.d.comb += self.y[16*i+8:16*i+12].eq(buffs[i].y2)
             m.d.comb += self.y[16*i+12:16*i+16].eq(buffs[i].y3)
+
+        return m
+
+
+class IC_mux32(Elaboratable):
+    """An N-input 32-bit multiplexer made of 7416244s.
+
+    Select lines are separate. Activating more than one is a really
+    bad idea.
+    """
+
+    def __init__(self, N: int):
+        self.N = N
+        self.a = Array([Signal(32, name=f"mux_in{i}") for i in range(N)])
+        self.n_sel = Signal(N)
+        self.y = Signal(32)
+
+    def elaborate(self, _: Platform) -> Module:
+        """Implements the logic of an N-input 32-bit multiplexer."""
+        m = Module()
+
+        buffs = [IC_buff32() for _ in range(self.N)]
+        m.submodules += buffs
+
+        for i in range(self.N):
+            m.d.comb += buffs[i].a.eq(self.a[i])
+            m.d.comb += buffs[i].n_oe.eq(self.n_sel[i])
+
+        combine = 0
+        for i in range(0, self.N):
+            combine |= buffs[i].y
+        m.d.comb += self.y.eq(combine)
 
         return m
 
