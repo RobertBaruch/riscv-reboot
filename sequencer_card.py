@@ -366,36 +366,13 @@ class SequencerCard(Elaboratable):
             m.d.ph1 += self.state._pc.eq(self.memdata_rd)
 
         if self.chips:
-            r = IC_reg32_with_mux(clk=m.d.ph1, N=4)
-            m.submodules += r
-            m.d.comb += self.state.memaddr.eq(r.q)
-
-            m.d.comb += r.d[0].eq(self._pc_plus_4)
-            m.d.comb += r.n_sel[0].eq(~self._pc_plus_4_to_memaddr)
-
-            m.d.comb += r.d[1].eq(self.data_x_in)
-            m.d.comb += r.n_sel[1].eq(~self._x_to_memaddr)
-
-            m.d.comb += r.d[2].eq(self.data_z_in)
-            m.d.comb += r.n_sel[2].eq(~self._z_to_memaddr)
-
-            m.d.comb += r.d[3].eq(self.memdata_rd)
-            m.d.comb += r.n_sel[3].eq(~self._memdata_to_memaddr)
+            self.multiplex_to_memaddr_chips(m)
+            self.multiplex_to_memdata_chips(m)
+            self.multiplex_to_tmp_chips(m)
         else:
-            with m.If(self._pc_plus_4_to_memaddr):
-                m.d.ph1 += self.state.memaddr.eq(self._pc_plus_4)
-            with m.Elif(self._x_to_memaddr):
-                m.d.ph1 += self.state.memaddr.eq(self.data_x_in)
-            with m.Elif(self._z_to_memaddr):
-                m.d.ph1 += self.state.memaddr.eq(self.data_z_in)
-            with m.Elif(self._memdata_to_memaddr):
-                m.d.ph1 += self.state.memaddr.eq(self.memdata_rd)
-
-        with m.If(self._z_to_memdata):
-            m.d.ph1 += self.state.memdata_wr.eq(self.data_z_in)
-
-        with m.If(self._x_to_tmp):
-            m.d.ph2w += self.state._tmp.eq(self.data_x_in)
+            self.multiplex_to_memaddr(m)
+            self.multiplex_to_memdata(m)
+            self.multiplex_to_tmp(m)
 
         with m.If(self.z_to_csr):
             with m.Switch(self.csr_num):
@@ -420,9 +397,9 @@ class SequencerCard(Elaboratable):
 
         # Updates to multiplexers
         if (self.chips):
-            self.multiplex_x_chips(m)
+            self.multiplex_to_x_chips(m)
         else:
-            self.multiplex_x(m)
+            self.multiplex_to_x(m)
 
         with m.If(self._imm_to_y):
             m.d.comb += self.data_y_out.eq(self._imm)
@@ -544,7 +521,58 @@ class SequencerCard(Elaboratable):
         self.set_exception(m, TrapCause.EXC_ILLEGAL_INSTR,
                            mtval=self.state._instr)
 
-    def multiplex_x(self, m: Module):
+    def multiplex_to_tmp(self, m: Module):
+        with m.If(self._x_to_tmp):
+            m.d.ph2w += self.state._tmp.eq(self.data_x_in)
+
+    def multiplex_to_tmp_chips(self, m: Module):
+        r = IC_reg32_with_mux(clk=m.d.ph2w, N=1)
+        m.submodules += r
+        m.d.comb += self.state._tmp.eq(r.q)
+
+        m.d.comb += r.d[0].eq(self.data_x_in)
+        m.d.comb += r.n_sel[0].eq(~self._x_to_tmp)
+
+    def multiplex_to_memdata(self, m: Module):
+        with m.If(self._z_to_memdata):
+            m.d.ph1 += self.state.memdata_wr.eq(self.data_z_in)
+
+    def multiplex_to_memdata_chips(self, m: Module):
+        r = IC_reg32_with_mux(clk=m.d.ph1, N=1)
+        m.submodules += r
+        m.d.comb += self.state.memdata_wr.eq(r.q)
+
+        m.d.comb += r.d[0].eq(self.data_z_in)
+        m.d.comb += r.n_sel[0].eq(~self._z_to_memdata)
+
+    def multiplex_to_memaddr(self, m: Module):
+        with m.If(self._pc_plus_4_to_memaddr):
+            m.d.ph1 += self.state.memaddr.eq(self._pc_plus_4)
+        with m.Elif(self._x_to_memaddr):
+            m.d.ph1 += self.state.memaddr.eq(self.data_x_in)
+        with m.Elif(self._z_to_memaddr):
+            m.d.ph1 += self.state.memaddr.eq(self.data_z_in)
+        with m.Elif(self._memdata_to_memaddr):
+            m.d.ph1 += self.state.memaddr.eq(self.memdata_rd)
+
+    def multiplex_to_memaddr_chips(self, m: Module):
+        r = IC_reg32_with_mux(clk=m.d.ph1, N=4)
+        m.submodules += r
+        m.d.comb += self.state.memaddr.eq(r.q)
+
+        m.d.comb += r.d[0].eq(self._pc_plus_4)
+        m.d.comb += r.n_sel[0].eq(~self._pc_plus_4_to_memaddr)
+
+        m.d.comb += r.d[1].eq(self.data_x_in)
+        m.d.comb += r.n_sel[1].eq(~self._x_to_memaddr)
+
+        m.d.comb += r.d[2].eq(self.data_z_in)
+        m.d.comb += r.n_sel[2].eq(~self._z_to_memaddr)
+
+        m.d.comb += r.d[3].eq(self.memdata_rd)
+        m.d.comb += r.n_sel[3].eq(~self._memdata_to_memaddr)
+
+    def multiplex_to_x(self, m: Module):
         with m.If(self._pc_to_x):
             m.d.comb += self.data_x_out.eq(self.state._pc)
         with m.Elif(self._memdata_to_x):
@@ -566,7 +594,7 @@ class SequencerCard(Elaboratable):
                 with m.Case(CSRAddr.MIP):
                     m.d.comb += self.data_x_out.eq(self.state._mip)
 
-    def multiplex_x_chips(self, m: Module):
+    def multiplex_to_x_chips(self, m: Module):
         mux = IC_mux32(9)
         m.submodules += mux
 
