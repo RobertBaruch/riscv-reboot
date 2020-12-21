@@ -209,6 +209,24 @@ class SequencerCard(Elaboratable):
         # memory load shamt
         self._shamt = Signal(5)
 
+        # -> various CSRs
+        self._trapcause_to_mcause = Signal()
+        self._trapcause = Signal(TrapCause)
+        self._pc_to_mepc = Signal()
+        self._pc_plus_4_to_mepc = Signal()
+        self._pc_to_mtval = Signal()
+        self._instr_to_mtval = Signal()
+        self._memaddr_to_mtval = Signal()
+        self._memaddr_lsb_masked_to_mtval = Signal()
+        self._z_to_mtval = Signal()
+        self._pend_mti = Signal()
+        self._pend_mei = Signal()
+        self._clear_pend_mti = Signal()
+        self._clear_pend_mei = Signal()
+
+        self._enter_trap = Signal()
+        self._exit_trap = Signal()
+
     def elaborate(self, _: Platform) -> Module:
         """Implements the logic of the sequencer card."""
         m = Module()
@@ -258,6 +276,20 @@ class SequencerCard(Elaboratable):
             self._y_reg_select.eq(0),
             self._z_reg_select.eq(0),
             self._next_reg_page.eq(self.state.reg_page),
+            self._trapcause_to_mcause.eq(0),
+            self._pc_to_mepc.eq(0),
+            self._pc_plus_4_to_mepc.eq(0),
+            self._pc_to_mtval.eq(0),
+            self._instr_to_mtval.eq(0),
+            self._memaddr_to_mtval.eq(0),
+            self._memaddr_lsb_masked_to_mtval.eq(0),
+            self._z_to_mtval.eq(0),
+            self._enter_trap.eq(0),
+            self._exit_trap.eq(0),
+            self._pend_mti.eq(0),
+            self._pend_mei.eq(0),
+            self._clear_pend_mti.eq(0),
+            self._clear_pend_mei.eq(0),
         ]
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
 
@@ -281,21 +313,27 @@ class SequencerCard(Elaboratable):
 
                 with m.If(self.state._mie[MInterrupt.MTI]):
                     with m.If(~self.state._mip[MInterrupt.MTI]):
-                        m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(
-                            self.time_irq)
+                        m.d.comb += self._pend_mti.eq(self.time_irq)
+                        # m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(
+                        #     self.time_irq)
                 with m.Else():
-                    m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
+                    m.d.comb += self._clear_pend_mti.eq(1)
+                    # m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
 
                 with m.If(self.state._mie[MInterrupt.MEI]):
                     with m.If(~self.state._mip[MInterrupt.MEI]):
-                        m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(
-                            self.ext_irq)
+                        m.d.comb += self._pend_mei.eq(self.ext_irq)
+                        # m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(
+                        #     self.ext_irq)
                 with m.Else():
-                    m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
+                    m.d.comb += self._clear_pend_mei.eq(1)
+                    # m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
 
             with m.Else():
-                m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
-                m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
+                m.d.comb += self._clear_pend_mti.eq(1)
+                m.d.comb += self._clear_pend_mei.eq(1)
+                # m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
+                # m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
 
         with m.If(self._is_last_instr_cycle):
             m.d.comb += self.instr_complete.eq(self.mcycle_end)
@@ -322,7 +360,7 @@ class SequencerCard(Elaboratable):
         instr_misalign = all_true(self.state._pc[0:2] != 0, ~self.state.trap)
         with m.If(instr_misalign):
             self.set_exception(
-                m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self.state._pc)
+                m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._pc_to_mtval)
 
         with m.Elif(is_interrupted):
             m.d.ph2w += self.state._mtval.eq(self.state._pc)
@@ -351,98 +389,87 @@ class SequencerCard(Elaboratable):
         m.d.ph1 += self.state._stored_alu_lt.eq(self.alu_lt)
         m.d.ph1 += self.state._stored_alu_ltu.eq(self.alu_ltu)
 
-        with m.If(self._pc_plus_4_to_pc):
-            m.d.ph1 += self.state._pc.eq(self._pc_plus_4)
-        with m.Elif(self._x_to_pc):
-            m.d.ph1 += self.state._pc.eq(self.data_x_in)
-        with m.Elif(self._z_to_pc):
-            m.d.ph1 += self.state._pc.eq(self.data_z_in)
-        with m.Elif(self._memaddr_to_pc):
-            # This is the result of a JAL or JALR instruction.
-            # See the comment on JAL for why this is okay to do.
-            m.d.ph1 += self.state._pc[1:].eq(self.state.memaddr[1:])
-            m.d.ph1 += self.state._pc[0].eq(0)
-        with m.Elif(self._memdata_to_pc):
-            m.d.ph1 += self.state._pc.eq(self.memdata_rd)
-
         if self.chips:
+            self.multiplex_to_pc_chips(m)
             self.multiplex_to_memaddr_chips(m)
             self.multiplex_to_memdata_chips(m)
             self.multiplex_to_tmp_chips(m)
         else:
+            self.multiplex_to_pc(m)
             self.multiplex_to_memaddr(m)
             self.multiplex_to_memdata(m)
             self.multiplex_to_tmp(m)
 
-        with m.If(self.z_to_csr):
-            with m.Switch(self.csr_num):
-                with m.Case(CSRAddr.MCAUSE):
-                    m.d.ph2w += self.state._mcause.eq(self.data_z_in)
-                with m.Case(CSRAddr.MTVEC):
-                    m.d.ph2w += self.state._mtvec.eq(self.data_z_in)
-                with m.Case(CSRAddr.MEPC):
-                    m.d.ph2w += self.state._mepc.eq(self.data_z_in)
-                with m.Case(CSRAddr.MTVAL):
-                    m.d.ph2w += self.state._mtval.eq(self.data_z_in)
-                with m.Case(CSRAddr.MSTATUS):
-                    m.d.ph2w += self.state._mstatus.eq(self.data_z_in)
-                with m.Case(CSRAddr.MIE):
-                    m.d.ph2w += self.state._mie.eq(self.data_z_in)
-                with m.Case(CSRAddr.MIP):
-                    # Pending machine interrupts are not writable.
-                    m.d.ph2w += self.state._mip[0:3].eq(self.data_z_in[0:3])
-                    m.d.ph2w += self.state._mip[4:7].eq(self.data_z_in[4:7])
-                    m.d.ph2w += self.state._mip[8:11].eq(self.data_z_in[8:11])
-                    m.d.ph2w += self.state._mip[12:].eq(self.data_z_in[12:])
+        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MCAUSE)):
+            m.d.ph2w += self.state._mcause.eq(self.data_z_in)
+        with m.Elif(self._trapcause_to_mcause):
+            m.d.ph2w += self.state._mcause.eq(self._trapcause)
+
+        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MEPC)):
+            m.d.ph2w += self.state._mepc.eq(self.data_z_in)
+        with m.Elif(self._pc_to_mepc):
+            m.d.ph2w += self.state._mepc.eq(self.state._pc)
+        with m.Elif(self._pc_plus_4_to_mepc):
+            m.d.ph2w += self.state._mepc.eq(self._pc_plus_4)
+
+        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MTVEC)):
+            m.d.ph2w += self.state._mtvec.eq(self.data_z_in)
+
+        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MTVAL)):
+            m.d.ph2w += self.state._mtval.eq(self.data_z_in)
+        with m.Elif(self._pc_to_mtval):
+            m.d.ph2w += self.state._mtval.eq(self.state._pc)
+        with m.Elif(self._instr_to_mtval):
+            m.d.ph2w += self.state._mtval.eq(self.state._instr)
+        with m.Elif(self._memaddr_to_mtval):
+            m.d.ph2w += self.state._mtval.eq(self.state.memaddr)
+        with m.Elif(self._memaddr_lsb_masked_to_mtval):
+            m.d.ph2w += self.state._mtval.eq(self.state.memaddr & 0xFFFFFFFE)
+        with m.Elif(self._z_to_mtval):
+            m.d.ph2w += self.state._mtval.eq(self.data_z_in)
+
+        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MSTATUS)):
+            m.d.ph2w += self.state._mstatus.eq(self.data_z_in)
+        with m.Elif(self._enter_trap):
+            m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(
+                self.state._mstatus[MStatus.MIE])
+            m.d.ph2w += self.state._mstatus[MStatus.MIE].eq(0)
+        with m.Elif(self._exit_trap):
+            m.d.ph2w += self.state._mstatus[MStatus.MIE].eq(
+                self.state._mstatus[MStatus.MPIE])
+            m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(1)
+
+        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MIE)):
+            m.d.ph2w += self.state._mie.eq(self.data_z_in)
+
+        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MIP)):
+            # Pending machine interrupts are not writable.
+            m.d.ph2w += self.state._mip[0:3].eq(self.data_z_in[0:3])
+            m.d.ph2w += self.state._mip[4:7].eq(self.data_z_in[4:7])
+            m.d.ph2w += self.state._mip[8:11].eq(self.data_z_in[8:11])
+            m.d.ph2w += self.state._mip[12:].eq(self.data_z_in[12:])
+        with m.If(self._pend_mti):
+            m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(1)
+        with m.Elif(self._clear_pend_mti):
+            m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
+        with m.If(self._pend_mei):
+            m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(1)
+        with m.Elif(self._clear_pend_mei):
+            m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
 
         # Updates to multiplexers
-        if (self.chips):
+        if self.chips:
             self.multiplex_to_x_chips(m)
+            self.multiplex_to_y_chips(m)
+            self.multiplex_to_z_chips(m)
+            self.multiplex_to_csr_num_chips(m)
+            self.multiplex_to_reg_nums_chips(m)
         else:
             self.multiplex_to_x(m)
-
-        with m.If(self._imm_to_y):
-            m.d.comb += self.data_y_out.eq(self._imm)
-        with m.Elif(self._shamt_to_y):
-            m.d.comb += self.data_y_out.eq(self._shamt)
-
-        with m.If(self._pc_plus_4_to_z):
-            m.d.comb += self.data_z_out.eq(self._pc_plus_4)
-        with m.Elif(self._tmp_to_z):
-            m.d.comb += self.data_z_out.eq(self.state._tmp)
-
-        with m.If(self._funct12_to_csr_num):
-            m.d.comb += self.csr_num.eq(self._funct12)
-        with m.Elif(self._mepc_num_to_csr_num):
-            m.d.comb += self.csr_num.eq(CSRAddr.MEPC)
-
-        with m.Switch(self._x_reg_select):
-            with m.Case(InstrReg.ZERO):
-                m.d.comb += self.x_reg.eq(0)
-            with m.Case(InstrReg.RS1):
-                m.d.comb += self.x_reg.eq(self._rs1)
-            with m.Case(InstrReg.RS2):
-                m.d.comb += self.x_reg.eq(self._rs2)
-            with m.Case(InstrReg.RD):
-                m.d.comb += self.x_reg.eq(self._rd)
-        with m.Switch(self._y_reg_select):
-            with m.Case(InstrReg.ZERO):
-                m.d.comb += self.y_reg.eq(0)
-            with m.Case(InstrReg.RS1):
-                m.d.comb += self.y_reg.eq(self._rs1)
-            with m.Case(InstrReg.RS2):
-                m.d.comb += self.y_reg.eq(self._rs2)
-            with m.Case(InstrReg.RD):
-                m.d.comb += self.y_reg.eq(self._rd)
-        with m.Switch(self._z_reg_select):
-            with m.Case(InstrReg.ZERO):
-                m.d.comb += self.z_reg.eq(0)
-            with m.Case(InstrReg.RS1):
-                m.d.comb += self.z_reg.eq(self._rs1)
-            with m.Case(InstrReg.RS2):
-                m.d.comb += self.z_reg.eq(self._rs2)
-            with m.Case(InstrReg.RD):
-                m.d.comb += self.z_reg.eq(self._rd)
+            self.multiplex_to_y(m)
+            self.multiplex_to_z(m)
+            self.multiplex_to_csr_num(m)
+            self.multiplex_to_reg_nums(m)
 
         # Decode instruction
         m.d.comb += [
@@ -510,16 +537,65 @@ class SequencerCard(Elaboratable):
 
     def set_exception(self, m: Module, exc: TrapCause, mtval: Signal, fatal: bool = True):
         m.d.ph2 += self.state._exception.eq(1)
-        m.d.ph2w += self.state._mcause.eq(exc)
-        m.d.ph2w += self.state._mtval.eq(mtval)
-        m.d.ph2w += self.state._mepc.eq(
-            self.state._pc if fatal else self._pc_plus_4)
+
+        # m.d.ph2w += self.state._mcause.eq(exc)
+        m.d.comb += self._trapcause.eq(exc)
+        m.d.comb += self._trapcause_to_mcause.eq(1)
+
+        m.d.comb += mtval.eq(1)
+        # m.d.ph2w += self.state._mtval.eq(mtval)
+
+        if fatal:
+            m.d.comb += self._pc_to_mepc.eq(1)
+        else:
+            m.d.comb += self._pc_plus_4_to_mepc.eq(1)
+        # m.d.ph2w += self.state._mepc.eq(
+        #     self.state._pc if fatal else self._pc_plus_4)
+
         m.d.ph1 += self.state.trap.eq(1)
         m.d.comb += self._next_instr_phase.eq(0)
 
     def handle_illegal_instr(self, m: Module):
         self.set_exception(m, TrapCause.EXC_ILLEGAL_INSTR,
-                           mtval=self.state._instr)
+                           mtval=self._instr_to_mtval)
+
+    def multiplex_to_pc(self, m: Module):
+        with m.If(self._pc_plus_4_to_pc):
+            m.d.ph1 += self.state._pc.eq(self._pc_plus_4)
+        with m.Elif(self._x_to_pc):
+            m.d.ph1 += self.state._pc.eq(self.data_x_in)
+        with m.Elif(self._z_to_pc):
+            m.d.ph1 += self.state._pc.eq(self.data_z_in)
+        with m.Elif(self._memaddr_to_pc):
+            # This is the result of a JAL or JALR instruction.
+            # See the comment on JAL for why this is okay to do.
+            m.d.ph1 += self.state._pc[1:].eq(self.state.memaddr[1:])
+            m.d.ph1 += self.state._pc[0].eq(0)
+        with m.Elif(self._memdata_to_pc):
+            m.d.ph1 += self.state._pc.eq(self.memdata_rd)
+
+    def multiplex_to_pc_chips(self, m: Module):
+        r = IC_reg32_with_mux(clk=m.d.ph1, N=5)
+        m.submodules += r
+        m.d.comb += self.state._pc.eq(r.q)
+
+        m.d.comb += r.n_sel[0].eq(~self._pc_plus_4_to_pc)
+        m.d.comb += r.d[0].eq(self._pc_plus_4)
+
+        m.d.comb += r.n_sel[1].eq(~self._x_to_pc)
+        m.d.comb += r.d[1].eq(self.data_x_in)
+
+        m.d.comb += r.n_sel[2].eq(~self._z_to_pc)
+        m.d.comb += r.d[2].eq(self.data_z_in)
+
+        m.d.comb += r.n_sel[3].eq(~self._memaddr_to_pc)
+        # This is the result of a JAL or JALR instruction.
+        # See the comment on JAL for why this is okay to do.
+        m.d.comb += r.d[3][1:].eq(self.state.memaddr[1:])
+        m.d.comb += r.d[3][0].eq(0)
+
+        m.d.comb += r.n_sel[4].eq(~self._memdata_to_pc)
+        m.d.comb += r.d[4].eq(self.memdata_rd)
 
     def multiplex_to_tmp(self, m: Module):
         with m.If(self._x_to_tmp):
@@ -530,8 +606,8 @@ class SequencerCard(Elaboratable):
         m.submodules += r
         m.d.comb += self.state._tmp.eq(r.q)
 
-        m.d.comb += r.d[0].eq(self.data_x_in)
         m.d.comb += r.n_sel[0].eq(~self._x_to_tmp)
+        m.d.comb += r.d[0].eq(self.data_x_in)
 
     def multiplex_to_memdata(self, m: Module):
         with m.If(self._z_to_memdata):
@@ -542,8 +618,8 @@ class SequencerCard(Elaboratable):
         m.submodules += r
         m.d.comb += self.state.memdata_wr.eq(r.q)
 
-        m.d.comb += r.d[0].eq(self.data_z_in)
         m.d.comb += r.n_sel[0].eq(~self._z_to_memdata)
+        m.d.comb += r.d[0].eq(self.data_z_in)
 
     def multiplex_to_memaddr(self, m: Module):
         with m.If(self._pc_plus_4_to_memaddr):
@@ -560,17 +636,17 @@ class SequencerCard(Elaboratable):
         m.submodules += r
         m.d.comb += self.state.memaddr.eq(r.q)
 
-        m.d.comb += r.d[0].eq(self._pc_plus_4)
         m.d.comb += r.n_sel[0].eq(~self._pc_plus_4_to_memaddr)
+        m.d.comb += r.d[0].eq(self._pc_plus_4)
 
-        m.d.comb += r.d[1].eq(self.data_x_in)
         m.d.comb += r.n_sel[1].eq(~self._x_to_memaddr)
+        m.d.comb += r.d[1].eq(self.data_x_in)
 
-        m.d.comb += r.d[2].eq(self.data_z_in)
         m.d.comb += r.n_sel[2].eq(~self._z_to_memaddr)
+        m.d.comb += r.d[2].eq(self.data_z_in)
 
-        m.d.comb += r.d[3].eq(self.memdata_rd)
         m.d.comb += r.n_sel[3].eq(~self._memdata_to_memaddr)
+        m.d.comb += r.d[3].eq(self.memdata_rd)
 
     def multiplex_to_x(self, m: Module):
         with m.If(self._pc_to_x):
@@ -617,6 +693,109 @@ class SequencerCard(Elaboratable):
             m.d.comb += mux.a[i].eq(inputs[i])
             m.d.comb += mux.n_sel[i].eq(~selectors[i])
         m.d.comb += self.data_x_out.eq(mux.y)
+
+    def multiplex_to_y(self, m: Module):
+        with m.If(self._imm_to_y):
+            m.d.comb += self.data_y_out.eq(self._imm)
+        with m.Elif(self._shamt_to_y):
+            m.d.comb += self.data_y_out.eq(self._shamt)
+
+    def multiplex_to_y_chips(self, m: Module):
+        mux = IC_mux32(2)
+        m.submodules += mux
+
+        m.d.comb += self.data_y_out.eq(mux.y)
+
+        m.d.comb += mux.n_sel[0].eq(~self._imm_to_y)
+        m.d.comb += mux.a[0].eq(self._imm)
+
+        m.d.comb += mux.n_sel[1].eq(~self._shamt_to_y)
+        m.d.comb += mux.a[1].eq(self._shamt)
+
+    def multiplex_to_z(self, m: Module):
+        with m.If(self._pc_plus_4_to_z):
+            m.d.comb += self.data_z_out.eq(self._pc_plus_4)
+        with m.Elif(self._tmp_to_z):
+            m.d.comb += self.data_z_out.eq(self.state._tmp)
+
+    def multiplex_to_z_chips(self, m: Module):
+        mux = IC_mux32(2)
+        m.submodules += mux
+
+        m.d.comb += self.data_z_out.eq(mux.y)
+
+        m.d.comb += mux.n_sel[0].eq(~self._pc_plus_4_to_z)
+        m.d.comb += mux.a[0].eq(self._pc_plus_4)
+
+        m.d.comb += mux.n_sel[1].eq(~self._tmp_to_z)
+        m.d.comb += mux.a[1].eq(self.state._tmp)
+
+    def multiplex_to_csr_num(self, m: Module):
+        with m.If(self._funct12_to_csr_num):
+            m.d.comb += self.csr_num.eq(self._funct12)
+        with m.Elif(self._mepc_num_to_csr_num):
+            m.d.comb += self.csr_num.eq(CSRAddr.MEPC)
+
+    def multiplex_to_csr_num_chips(self, m: Module):
+        mux = IC_mux32(2)
+        m.submodules += mux
+
+        m.d.comb += self.csr_num.eq(mux.y)
+
+        m.d.comb += mux.n_sel[0].eq(~self._funct12_to_csr_num)
+        m.d.comb += mux.a[0].eq(self._funct12)
+
+        m.d.comb += mux.n_sel[1].eq(~self._mepc_num_to_csr_num)
+        m.d.comb += mux.a[1].eq(CSRAddr.MEPC)
+
+    def multiplex_to_reg_nums(self, m: Module):
+        with m.Switch(self._x_reg_select):
+            with m.Case(InstrReg.ZERO):
+                m.d.comb += self.x_reg.eq(0)
+            with m.Case(InstrReg.RS1):
+                m.d.comb += self.x_reg.eq(self._rs1)
+            with m.Case(InstrReg.RS2):
+                m.d.comb += self.x_reg.eq(self._rs2)
+            with m.Case(InstrReg.RD):
+                m.d.comb += self.x_reg.eq(self._rd)
+        with m.Switch(self._y_reg_select):
+            with m.Case(InstrReg.ZERO):
+                m.d.comb += self.y_reg.eq(0)
+            with m.Case(InstrReg.RS1):
+                m.d.comb += self.y_reg.eq(self._rs1)
+            with m.Case(InstrReg.RS2):
+                m.d.comb += self.y_reg.eq(self._rs2)
+            with m.Case(InstrReg.RD):
+                m.d.comb += self.y_reg.eq(self._rd)
+        with m.Switch(self._z_reg_select):
+            with m.Case(InstrReg.ZERO):
+                m.d.comb += self.z_reg.eq(0)
+            with m.Case(InstrReg.RS1):
+                m.d.comb += self.z_reg.eq(self._rs1)
+            with m.Case(InstrReg.RS2):
+                m.d.comb += self.z_reg.eq(self._rs2)
+            with m.Case(InstrReg.RD):
+                m.d.comb += self.z_reg.eq(self._rd)
+
+    def multiplex_to_reg_nums_chips(self, m: Module):
+        mux_x = IC_mux32(4)
+        mux_y = IC_mux32(4)
+        mux_z = IC_mux32(4)
+        m.submodules += [mux_x, mux_y, mux_z]
+        m.d.comb += self.x_reg.eq(mux_x.y)
+        m.d.comb += self.y_reg.eq(mux_y.y)
+        m.d.comb += self.z_reg.eq(mux_z.y)
+
+        sels = [InstrReg.ZERO, InstrReg.RS1, InstrReg.RS2, InstrReg.RD]
+        sigs = [0, self._rs1, self._rs2, self._rd]
+
+        for i in range(4):
+            m.d.comb += mux_x.n_sel[i].eq(self._x_reg_select != sels[i])
+            m.d.comb += mux_x.a[i].eq(sigs[i])
+            m.d.comb += mux_y.n_sel[i].eq(self._y_reg_select != sels[i])
+            m.d.comb += mux_y.a[i].eq(sigs[i])
+            m.d.comb += mux_z.n_sel[i].eq(self._z_reg_select != sels[i])
+            m.d.comb += mux_z.a[i].eq(sigs[i])
 
     def decode_imm(self, m: Module):
         """Decodes the immediate value out of the instruction."""
@@ -755,12 +934,20 @@ class SequencerCard(Elaboratable):
 
         with m.If(is_int):
             with m.If(self.state._mip[MInterrupt.MEI]):
-                m.d.ph2w += self.state._mcause.eq(TrapCause.INT_MACH_EXTERNAL)
-                m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
+                m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_EXTERNAL)
+                m.d.comb += self._trapcause_to_mcause.eq(1)
+                # m.d.ph2w += self.state._mcause.eq(TrapCause.INT_MACH_EXTERNAL)
+                m.d.comb += self._clear_pend_mei.eq(1)
+                # m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
             with m.Elif(self.state._mip[MInterrupt.MTI]):
-                m.d.ph2w += self.state._mcause.eq(TrapCause.INT_MACH_TIMER)
-                m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
-            m.d.ph2w += self.state._mepc.eq(self.state._pc)
+                m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_TIMER)
+                m.d.comb += self._trapcause_to_mcause.eq(1)
+                # m.d.ph2w += self.state._mcause.eq(TrapCause.INT_MACH_TIMER)
+                m.d.comb += self._clear_pend_mti.eq(1)
+                # m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
+
+            m.d.comb += self._pc_to_mepc.eq(1)
+            # m.d.ph2w += self.state._mepc.eq(self.state._pc)
 
         with m.If(fatal):
             m.d.comb += self._next_instr_phase.eq(0)
@@ -786,9 +973,10 @@ class SequencerCard(Elaboratable):
 
         with m.If(~fatal):
             m.d.ph1 += self.state.trap.eq(0)
-            m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(
-                self.state._mstatus[MStatus.MIE])
-            m.d.ph2w += self.state._mstatus[MStatus.MIE].eq(0)
+            m.d.comb += self._enter_trap.eq(1)
+            # m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(
+            #     self.state._mstatus[MStatus.MIE])
+            # m.d.ph2w += self.state._mstatus[MStatus.MIE].eq(0)
 
     def handle_lui(self, m: Module):
         """Adds the LUI logic to the given module.
@@ -964,7 +1152,7 @@ class SequencerCard(Elaboratable):
 
             with m.If(self.state.memaddr[1] != 0):
                 self.set_exception(
-                    m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self.state.memaddr)
+                    m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_to_mtval)
                 m.d.comb += self._memaddr_to_pc.eq(0)  # Cancel updating the PC
             with m.Else():
                 m.d.comb += self._is_last_instr_cycle.eq(1)
@@ -1003,7 +1191,7 @@ class SequencerCard(Elaboratable):
 
             with m.If(self.state.memaddr[1] != 0):
                 self.set_exception(
-                    m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self.state.memaddr & 0xFFFFFFFE)
+                    m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_lsb_masked_to_mtval)
                 m.d.comb += self._memaddr_to_pc.eq(0)  # Cancel updating the PC
             with m.Else():
                 m.d.comb += self._is_last_instr_cycle.eq(1)
@@ -1074,7 +1262,7 @@ class SequencerCard(Elaboratable):
 
             with m.If(self.data_z_in[0:2] != 0):
                 self.set_exception(
-                    m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self.data_z_in)
+                    m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._z_to_mtval)
                 m.d.comb += self._z_to_pc.eq(0)  # Cancel updating the PC
             with m.Else():
                 m.d.comb += self._is_last_instr_cycle.eq(1)
@@ -1189,7 +1377,7 @@ class SequencerCard(Elaboratable):
                             m.d.comb += self._shamt.eq(0)
                         with m.Default():
                             self.set_exception(
-                                m, TrapCause.EXC_LOAD_ADDR_MISALIGN, mtval=self.state.memaddr)
+                                m, TrapCause.EXC_LOAD_ADDR_MISALIGN, mtval=self._memaddr_to_mtval)
 
                 with m.Case(MemAccessWidth.W):
                     with m.Switch(self.state.memaddr[0:2]):
@@ -1197,7 +1385,7 @@ class SequencerCard(Elaboratable):
                             m.d.comb += self._shamt.eq(0)
                         with m.Default():
                             self.set_exception(
-                                m, TrapCause.EXC_LOAD_ADDR_MISALIGN, mtval=self.state.memaddr)
+                                m, TrapCause.EXC_LOAD_ADDR_MISALIGN, mtval=self._memaddr_to_mtval)
 
                 with m.Default():
                     self.handle_illegal_instr(m)
@@ -1308,7 +1496,7 @@ class SequencerCard(Elaboratable):
                             m.d.comb += self._shamt.eq(16)
                         with m.Default():
                             self.set_exception(
-                                m, TrapCause.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self.state.memaddr)
+                                m, TrapCause.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self._memaddr_to_mtval)
 
                 with m.Case(MemAccessWidth.W):
                     with m.Switch(self.state.memaddr[0:2]):
@@ -1316,7 +1504,7 @@ class SequencerCard(Elaboratable):
                             m.d.comb += self._shamt.eq(0)
                         with m.Default():
                             self.set_exception(
-                                m, TrapCause.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self.state.memaddr)
+                                m, TrapCause.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self._memaddr_to_mtval)
 
                 with m.Default():
                     self.handle_illegal_instr(m)
@@ -1551,15 +1739,16 @@ class SequencerCard(Elaboratable):
 
     def handle_MRET(self, m: Module):
         m.d.comb += [
+            # TODO: Change to _mepc_to_pc
             self._mepc_num_to_csr_num.eq(1),
             self.csr_to_x.eq(1),
             self._x_to_pc.eq(1),
+            self._exit_trap.eq(1),
             self._is_last_instr_cycle.eq(1),
         ]
-        # TODO: Multiplex!
-        m.d.ph2w += self.state._mstatus[MStatus.MIE].eq(
-            self.state._mstatus[MStatus.MPIE])
-        m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(1)
+        # m.d.ph2w += self.state._mstatus[MStatus.MIE].eq(
+        #     self.state._mstatus[MStatus.MPIE])
+        # m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(1)
 
     def handle_ECALL(self, m: Module):
         """Handles the ECALL instruction.
@@ -1571,7 +1760,7 @@ class SequencerCard(Elaboratable):
         so we have no choice but to disable interrupts for an ECALL.
         """
         self.set_exception(
-            m, TrapCause.EXC_ECALL_FROM_MACH_MODE, mtval=self.state._pc, fatal=False)
+            m, TrapCause.EXC_ECALL_FROM_MACH_MODE, mtval=self._pc_to_mtval, fatal=False)
 
     def handle_EBREAK(self, m: Module):
         """Handles the EBREAK instruction.
@@ -1583,7 +1772,7 @@ class SequencerCard(Elaboratable):
         so we have no choice but to disable interrupts for an EBREAK.
         """
         self.set_exception(
-            m, TrapCause.EXC_BREAKPOINT, mtval=self.state._pc, fatal=False)
+            m, TrapCause.EXC_BREAKPOINT, mtval=self._pc_to_mtval, fatal=False)
 
     @ classmethod
     def formal(cls) -> Tuple[Module, List[Signal]]:

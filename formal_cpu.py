@@ -1440,14 +1440,14 @@ class FormalCPU(Elaboratable):
                 # These REALLY speed up the process.
                 with m.Switch(data.opcode):
                     with m.Case(Opcode.OP, Opcode.BRANCH, Opcode.STORE):
-                        m.d.comb += Assume((data.rs1 == 1) | (data.rs1 == 0))
-                        m.d.comb += Assume((data.rs2 == 2) | (data.rs2 == 0))
+                        m.d.comb += Assume(data.rs1 <= 1)
+                        m.d.comb += Assume(data.rs2 <= 2)
 
                     with m.Case(Opcode.OP_IMM, Opcode.JALR):
-                        m.d.comb += Assume((data.rs1 == 1) | (data.rs1 == 0))
+                        m.d.comb += Assume(data.rs1 <= 1)
 
                     with m.Case(Opcode.LOAD):
-                        m.d.comb += Assume((data.rs1 == 1) | (data.rs1 == 0))
+                        m.d.comb += Assume(data.rs1 <= 1)
                         m.d.comb += Assume(data.rd <= 3)
 
                     with m.Case(Opcode.JAL):
@@ -1457,8 +1457,16 @@ class FormalCPU(Elaboratable):
                         with m.If((data.funct3 == SystemFunc.CSRRW) |
                                   (data.funct3 == SystemFunc.CSRRS) |
                                   (data.funct3 == SystemFunc.CSRRC)):
-                            m.d.comb += Assume((data.rs1 == 1)
-                                               | (data.rs1 == 0))
+                            m.d.comb += Assume(data.rs1 <= 1)
+                        with m.If((data.funct3 == SystemFunc.CSRRW) |
+                                  (data.funct3 == SystemFunc.CSRRS) |
+                                  (data.funct3 == SystemFunc.CSRRC) |
+                                  (data.funct3 == SystemFunc.CSRRWI) |
+                                  (data.funct3 == SystemFunc.CSRRSI) |
+                                  (data.funct3 == SystemFunc.CSRRCI)):
+                            m.d.comb += Assume(data.rd <= 3)
+                            m.d.comb += Assume((data.funct12 == CSRAddr.MCAUSE)
+                                               | (data.funct12 == 0x111))
             data.verify_fatal(m)
 
         if mode == "irq":
