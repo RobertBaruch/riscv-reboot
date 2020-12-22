@@ -1528,6 +1528,7 @@ class FormalCPU(Elaboratable):
                 Assume(cpu.seq.state._mepc == init_mepc),
                 Assume(cpu.seq.state._mstatus == init_mstatus),
                 Assume(cpu.seq.state._mie == init_mie),
+                Assume(cpu.seq.state._mip == 0),
             ]
             for i in range(0, 32):
                 m.d.comb += Assume(cpu.regs._x_bank._mem[i] == init_regs[i])

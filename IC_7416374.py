@@ -17,14 +17,16 @@ class IC_7416374(Elaboratable):
     """Contains logic for a 7416374 16-bit register.
     """
 
-    def __init__(self, clk):
+    def __init__(self, clk, ext_init: bool = False):
+        attrs = [] if not ext_init else [("uninitialized", "")]
+
         self.clk = clk
 
         self.d = Signal(16)
         self.n_oe = Signal()
         self.q = Signal(16)
 
-        self._q = Signal(16)
+        self._q = Signal(16, attrs=attrs)
 
     def elaborate(self, _: Platform) -> Module:
         """Implements the logic of the register."""
@@ -75,16 +77,18 @@ class IC_7416374(Elaboratable):
 class IC_reg32(Elaboratable):
     """A 32-bit register from a pair of 16-bit registers."""
 
-    def __init__(self, clk):
+    def __init__(self, clk, ext_init: bool = False):
         self.clk = clk
         self.d = Signal(32)
         self.n_oe = Signal()
         self.q = Signal(32)
+        self.ext_init = ext_init
 
     def elaborate(self, _: Platform) -> Module:
         """Implements the logic of the register."""
         m = Module()
-        regs = [IC_7416374(self.clk), IC_7416374(self.clk)]
+        regs = [IC_7416374(self.clk, self.ext_init),
+                IC_7416374(self.clk, self.ext_init)]
         m.submodules += regs
 
         for i in range(2):
@@ -101,17 +105,18 @@ class IC_reg32_with_mux(Elaboratable):
     There is no output enable input.
     """
 
-    def __init__(self, clk, N: int):
+    def __init__(self, clk, N: int, ext_init: bool = False):
         self.N = N
         self.clk = clk
         self.d = Array([Signal(32) for _ in range(N)])
         self.n_sel = Signal(N)
         self.q = Signal(32)
+        self.ext_init = ext_init
 
     def elaborate(self, _: Platform) -> Module:
         """The logic."""
         m = Module()
-        r = IC_reg32(self.clk)
+        r = IC_reg32(self.clk, self.ext_init)
         mux = IC_mux32(self.N + 1)
         m.submodules += [r, mux]
 
