@@ -593,13 +593,12 @@ class SequencerCard(Elaboratable):
                               sigs=[self.data_z_in])
         self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self.state._mtval,
                               sels=[
-                                  self.z_to_csr & (
-                                      self.csr_num == CSRAddr.MTVAL),
+                                  (self.z_to_csr & (
+                                      self.csr_num == CSRAddr.MTVAL)) | self._z_to_mtval,
                                   self._pc_to_mtval,
                                   self._instr_to_mtval,
                                   self._memaddr_to_mtval,
                                   self._memaddr_lsb_masked_to_mtval,
-                                  self._z_to_mtval,
                               ],
                               sigs=[
                                   self.data_z_in,
@@ -607,7 +606,6 @@ class SequencerCard(Elaboratable):
                                   self.state._instr,
                                   self.state.memaddr,
                                   self.state.memaddr & 0xFFFFFFFE,
-                                  self.data_z_in,
                               ])
 
         enter_trap_mstatus = self.state._mstatus
