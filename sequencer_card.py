@@ -1241,18 +1241,16 @@ class SequencerCard(Elaboratable):
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
-            m.d.comb += [
-                self._pc_plus_4_to_z.eq(1),
-                self._z_reg_select.eq(InstrReg.RD),
-                self._memaddr_to_pc.eq(1),
-            ]
-
             with m.If(self.state.memaddr[1] != 0):
                 self.set_exception(
                     m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_to_mtval)
-                m.d.comb += self._memaddr_to_pc.eq(0)  # Cancel updating the PC
             with m.Else():
-                m.d.comb += self._is_last_instr_cycle.eq(1)
+                m.d.comb += [
+                    self._pc_plus_4_to_z.eq(1),
+                    self._z_reg_select.eq(InstrReg.RD),
+                    self._memaddr_to_pc.eq(1),
+                    self._is_last_instr_cycle.eq(1),
+                ]
 
     def handle_jalr(self, m: Module):
         """Adds the JALR logic to the given module.
@@ -1280,18 +1278,16 @@ class SequencerCard(Elaboratable):
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
-            m.d.comb += [
-                self._pc_plus_4_to_z.eq(1),
-                self._z_reg_select.eq(InstrReg.RD),
-                self._memaddr_to_pc.eq(1),
-            ]
-
             with m.If(self.state.memaddr[1] != 0):
                 self.set_exception(
                     m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_lsb_masked_to_mtval)
-                m.d.comb += self._memaddr_to_pc.eq(0)  # Cancel updating the PC
             with m.Else():
-                m.d.comb += self._is_last_instr_cycle.eq(1)
+                m.d.comb += [
+                    self._pc_plus_4_to_z.eq(1),
+                    self._z_reg_select.eq(InstrReg.RD),
+                    self._memaddr_to_pc.eq(1),
+                    self._is_last_instr_cycle.eq(1),
+                ]
 
     def handle_branch(self, m: Module):
         """Adds the BRANCH logic to the given module.
@@ -1353,16 +1349,17 @@ class SequencerCard(Elaboratable):
             m.d.comb += [
                 self._pc_to_x.eq(1),
                 self.alu_op_to_z.eq(AluOp.ADD),
-                self._z_to_pc.eq(1),
-                self._z_to_memaddr.eq(1),
             ]
 
             with m.If(self.data_z_in[0:2] != 0):
                 self.set_exception(
                     m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._z_to_mtval)
-                m.d.comb += self._z_to_pc.eq(0)  # Cancel updating the PC
             with m.Else():
-                m.d.comb += self._is_last_instr_cycle.eq(1)
+                m.d.comb += [
+                    self._z_to_pc.eq(1),
+                    self._z_to_memaddr.eq(1),
+                    self._is_last_instr_cycle.eq(1),
+                ]
 
     def handle_load(self, m: Module):
         """Adds the LOAD logic to the given module.
