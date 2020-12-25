@@ -38,8 +38,7 @@ class ExcCard(Elaboratable):
 
     def __init__(self, ext_init: bool = False):
         """Constructs an exception card."""
-        self.ext_init = ext_init
-        attrs = [] if not ext_init else [("uninitialized", "")]
+        self._ext_init = ext_init
 
         # Buses
         self.data_x_in = Signal(32)
@@ -110,7 +109,7 @@ class ExcCard(Elaboratable):
         assert len(sels) == len(sigs)
 
         muxreg = IC_reg32_with_mux(
-            clk=clk, N=len(sels), ext_init=self.ext_init, faster=True)
+            clk=clk, N=len(sels), ext_init=self._ext_init, faster=True)
         m.submodules += muxreg
         m.d.comb += reg.eq(muxreg.q)
         for i in range(len(sels)):

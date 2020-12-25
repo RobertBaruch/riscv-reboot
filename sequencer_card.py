@@ -59,12 +59,6 @@ class SequencerState:
         self.fatal = Signal()
 
         self._mtvec = Signal(32, attrs=attrs)
-        # Starts with interrupts globally disabled
-        self._mstatus = Signal(32, attrs=attrs)
-        # Specific interrupts enable
-        self._mie = Signal(32, attrs=attrs)
-        # Interrupts pending
-        self._mip = Signal(32)
 
 
 class SequencerCard(Elaboratable):
@@ -221,13 +215,13 @@ class SequencerCard(Elaboratable):
 
         # -> various CSRs
         self._trapcause = Signal(TrapCause)
-        self._pend_mti = Signal()
-        self._pend_mei = Signal()
-        self._clear_pend_mti = Signal()
-        self._clear_pend_mei = Signal()
+        self.clear_pend_mti = Signal()
+        self.clear_pend_mei = Signal()
+        self.mei_pend = Signal()
+        self.mti_pend = Signal()
 
-        self._enter_trap = Signal()
-        self._exit_trap = Signal()
+        self.enter_trap = Signal()
+        self.exit_trap = Signal()
 
     def elaborate(self, _: Platform) -> Module:
         """Implements the logic of the sequencer card."""
@@ -289,12 +283,10 @@ class SequencerCard(Elaboratable):
             self._y_reg_select.eq(0),
             self._z_reg_select.eq(0),
             self._next_reg_page.eq(self.state.reg_page),
-            self._enter_trap.eq(0),
-            self._exit_trap.eq(0),
-            self._pend_mti.eq(0),
-            self._pend_mei.eq(0),
-            self._clear_pend_mti.eq(0),
-            self._clear_pend_mei.eq(0),
+            self.enter_trap.eq(0),
+            self.exit_trap.eq(0),
+            self.clear_pend_mti.eq(0),
+            self.clear_pend_mei.eq(0),
             self.save_trap_csrs.eq(0),
         ]
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
@@ -304,34 +296,6 @@ class SequencerCard(Elaboratable):
         return m
 
     def process(self, m: Module):
-        # Latch the time and ext irqs. This cues them up for handling
-        # when we're about to load an instruction (but not in a trap routine,
-        # and not if interrupts are disabled).
-        #
-        # These get reset once the trap handler runs.
-        #
-        # The time irq always has higher priority than the ext irq.
-        #
-        # TODO: Should we make this triggered on the interrupt signals
-        # themselves?
-        with m.If(~self.state.trap):
-            with m.If(self.state._mstatus[MStatus.MIE]):
-
-                with m.If(self.state._mie[MInterrupt.MTI]):
-                    with m.If(~self.state._mip[MInterrupt.MTI]):
-                        m.d.comb += self._pend_mti.eq(self.time_irq)
-                with m.Else():
-                    m.d.comb += self._clear_pend_mti.eq(1)
-
-                with m.If(self.state._mie[MInterrupt.MEI]):
-                    with m.If(~self.state._mip[MInterrupt.MEI]):
-                        m.d.comb += self._pend_mei.eq(self.ext_irq)
-                with m.Else():
-                    m.d.comb += self._clear_pend_mei.eq(1)
-
-            with m.Else():
-                m.d.comb += self._clear_pend_mti.eq(1)
-                m.d.comb += self._clear_pend_mei.eq(1)
 
         with m.If(self._is_last_instr_cycle):
             m.d.comb += self.instr_complete.eq(self.mcycle_end)
@@ -340,18 +304,11 @@ class SequencerCard(Elaboratable):
             with m.If(~self._x_to_memaddr & ~self._z_to_memaddr & ~self._memdata_to_memaddr):
                 m.d.comb += self._pc_plus_4_to_memaddr.eq(1)
 
-        is_interrupt_pending = Signal()
-        m.d.comb += is_interrupt_pending.eq(
-            (self.time_irq & self.state._mie[MInterrupt.MTI]) |
-            self.state._mip[MInterrupt.MTI] |
-            (self.ext_irq & self.state._mie[MInterrupt.MEI]) |
-            self.state._mip[MInterrupt.MEI]
-        )
         # We only check interrupts once we're about to load an instruction but we're not already
         # trapping an interrupt.
         is_interrupted = all_true(self.instr_complete,
                                   ~self.state.trap,
-                                  is_interrupt_pending)
+                                  (self.mei_pend | self.mti_pend))
 
         # Because we don't support the C (compressed instructions)
         # extension, the PC must be 32-bit aligned.
@@ -533,35 +490,6 @@ class SequencerCard(Elaboratable):
         with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MTVEC)):
             m.d.ph2w += self.state._mtvec.eq(self.data_z_in)
 
-        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MSTATUS)):
-            m.d.ph2w += self.state._mstatus.eq(self.data_z_in)
-        with m.Elif(self._enter_trap):
-            m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(
-                self.state._mstatus[MStatus.MIE])
-            m.d.ph2w += self.state._mstatus[MStatus.MIE].eq(0)
-        with m.Elif(self._exit_trap):
-            m.d.ph2w += self.state._mstatus[MStatus.MIE].eq(
-                self.state._mstatus[MStatus.MPIE])
-            m.d.ph2w += self.state._mstatus[MStatus.MPIE].eq(1)
-
-        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MIE)):
-            m.d.ph2w += self.state._mie.eq(self.data_z_in)
-
-        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MIP)):
-            # Pending machine interrupts are not writable.
-            m.d.ph2w += self.state._mip[0:3].eq(self.data_z_in[0:3])
-            m.d.ph2w += self.state._mip[4:7].eq(self.data_z_in[4:7])
-            m.d.ph2w += self.state._mip[8:11].eq(self.data_z_in[8:11])
-            m.d.ph2w += self.state._mip[12:].eq(self.data_z_in[12:])
-        with m.If(self._pend_mti):
-            m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(1)
-        with m.Elif(self._clear_pend_mti):
-            m.d.ph2w += self.state._mip[MInterrupt.MTI].eq(0)
-        with m.If(self._pend_mei):
-            m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(1)
-        with m.Elif(self._clear_pend_mei):
-            m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
-
     def multiplex_to_csrs_chips(self, m: Module):
         self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mtvec,
                               sels=[
@@ -569,68 +497,6 @@ class SequencerCard(Elaboratable):
                                       self.csr_num == CSRAddr.MTVEC)
                               ],
                               sigs=[self.data_z_in])
-
-        enter_trap_mstatus = self.state._mstatus
-        enter_trap_mstatus &= ~(1 << MStatus.MIE)  # clear MIE
-        enter_trap_mstatus &= ~(1 << MStatus.MPIE)  # clear MPIE
-        enter_trap_mstatus |= (
-            self.state._mstatus[MStatus.MIE] << MStatus.MPIE)  # set MPIE
-
-        exit_trap_mstatus = self.state._mstatus
-        exit_trap_mstatus |= (1 << MStatus.MPIE)  # set MPIE
-        exit_trap_mstatus &= ~(1 << MStatus.MIE)  # clear MIE
-        exit_trap_mstatus |= (
-            self.state._mstatus[MStatus.MPIE] << MStatus.MIE)  # set MIE
-
-        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mstatus,
-                              sels=[
-                                  self.z_to_csr & (
-                                      self.csr_num == CSRAddr.MSTATUS),
-                                  self._enter_trap,
-                                  self._exit_trap,
-                              ],
-                              sigs=[
-                                  self.data_z_in,
-                                  enter_trap_mstatus,
-                                  exit_trap_mstatus,
-                              ])
-        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mie,
-                              sels=[
-                                  self.z_to_csr & (
-                                      self.csr_num == CSRAddr.MIE)
-                              ],
-                              sigs=[self.data_z_in])
-
-        # Pending machine interrupts are not writable.
-        mip_load = Signal(32)
-        m.d.comb += mip_load.eq(self.data_z_in)
-        m.d.comb += mip_load[MInterrupt.MTI].eq(
-            self.state._mip[MInterrupt.MTI])
-        m.d.comb += mip_load[MInterrupt.MEI].eq(
-            self.state._mip[MInterrupt.MEI])
-        m.d.comb += mip_load[MInterrupt.MSI].eq(
-            self.state._mip[MInterrupt.MSI])
-
-        mip_pend = Signal(32)
-        m.d.comb += mip_pend.eq(self.state._mip)
-        with m.If(self._pend_mti):
-            m.d.comb += mip_pend[MInterrupt.MTI].eq(1)
-        with m.Elif(self._clear_pend_mti):
-            m.d.comb += mip_pend[MInterrupt.MTI].eq(0)
-        with m.If(self._pend_mei):
-            m.d.comb += mip_pend[MInterrupt.MEI].eq(1)
-        with m.Elif(self._clear_pend_mei):
-            m.d.comb += mip_pend[MInterrupt.MEI].eq(0)
-        any_mip_pend = (self._pend_mti | self._clear_pend_mti |
-                        self._pend_mei | self._clear_pend_mei)
-
-        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mip,
-                              sels=[
-                                  self.z_to_csr & (
-                                      self.csr_num == CSRAddr.MIP),
-                                  any_mip_pend,
-                              ],
-                              sigs=[mip_load, mip_pend])
 
     def multiplex_to_pc(self, m: Module):
         with m.If(self._pc_plus_4_to_pc):
@@ -738,12 +604,6 @@ class SequencerCard(Elaboratable):
             with m.Switch(self.csr_num):
                 with m.Case(CSRAddr.MTVEC):
                     m.d.comb += self.data_x_out.eq(self.state._mtvec)
-                with m.Case(CSRAddr.MSTATUS):
-                    m.d.comb += self.data_x_out.eq(self.state._mstatus)
-                with m.Case(CSRAddr.MIE):
-                    m.d.comb += self.data_x_out.eq(self.state._mie)
-                with m.Case(CSRAddr.MIP):
-                    m.d.comb += self.data_x_out.eq(self.state._mip)
 
     def multiplex_to_x_chips(self, m: Module):
         self.multiplex_to_bus(m, bus=self.data_x_out,
@@ -753,15 +613,10 @@ class SequencerCard(Elaboratable):
                                   self._trapcause_to_x,
                                   self.csr_to_x & (
                                       self.csr_num == CSRAddr.MTVEC),
-                                  self.csr_to_x & (
-                                      self.csr_num == CSRAddr.MSTATUS),
-                                  self.csr_to_x & (
-                                      self.csr_num == CSRAddr.MIE),
-                                  self.csr_to_x & (self.csr_num == CSRAddr.MIP)
                               ],
                               sigs=[self.state._pc, self.memdata_rd, self._trapcause,
-                                    self.state._mtvec, self.state._mstatus, self.state._mie,
-                                    self.state._mip])
+                                    self.state._mtvec,
+                                    ])
 
     def multiplex_to_y(self, m: Module):
         with m.If(self._imm_to_y):
@@ -1042,14 +897,14 @@ class SequencerCard(Elaboratable):
 
         with m.If(self.state._instr_phase == 0):
             with m.If(is_int):
-                with m.If(self.state._mip[MInterrupt.MEI]):
+                with m.If(self.mei_pend):
                     m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_EXTERNAL)
                     m.d.comb += self._trapcause_to_x.eq(1)
-                    m.d.comb += self._clear_pend_mei.eq(1)
-                with m.Elif(self.state._mip[MInterrupt.MTI]):
+                    m.d.comb += self.clear_pend_mei.eq(1)
+                with m.Elif(self.mti_pend):
                     m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_TIMER)
                     m.d.comb += self._trapcause_to_x.eq(1)
-                    m.d.comb += self._clear_pend_mti.eq(1)
+                    m.d.comb += self.clear_pend_mti.eq(1)
 
                 m.d.comb += self._pc_to_y.eq(1)
 
@@ -1070,8 +925,6 @@ class SequencerCard(Elaboratable):
                 m.d.comb += [
                     self._mcause_to_csr_num.eq(1),
                     self.csr_to_x.eq(1),
-                    # self.data_x_out[2:].eq(self._trapcause[:30]),
-                    # self.data_x_out[0:2].eq(0),
                 ]
             with m.Else():
                 m.d.comb += self.data_x_out.eq(0)
@@ -1081,7 +934,7 @@ class SequencerCard(Elaboratable):
                 self.alu_op_to_z.eq(AluOp.ADD),
                 self._z_30_to_memaddr.eq(1),  # z << 2 -> memaddr, pc
                 self._z_30_to_pc.eq(1),
-                self._enter_trap.eq(1),
+                self.enter_trap.eq(1),
                 self.instr_complete.eq(self.mcycle_end),
             ]
 
@@ -1865,11 +1718,10 @@ class SequencerCard(Elaboratable):
 
     def handle_MRET(self, m: Module):
         m.d.comb += [
-            # TODO: Change to _mepc_to_pc
             self._mepc_num_to_csr_num.eq(1),
             self.csr_to_x.eq(1),
             self._x_to_pc.eq(1),
-            self._exit_trap.eq(1),
+            self.exit_trap.eq(1),
             self._is_last_instr_cycle.eq(1),
         ]
 
