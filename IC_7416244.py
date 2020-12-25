@@ -156,15 +156,24 @@ class IC_mux32(Elaboratable):
     bad idea.
     """
 
-    def __init__(self, N: int):
+    def __init__(self, N: int, faster: bool = False):
         self.N = N
         self.a = Array([Signal(32, name=f"mux_in{i}") for i in range(N)])
         self.n_sel = Signal(N)
         self.y = Signal(32)
 
+        self._faster = faster
+
     def elaborate(self, _: Platform) -> Module:
         """Implements the logic of an N-input 32-bit multiplexer."""
         m = Module()
+
+        if self._faster:
+            m.d.comb += self.y.eq(0)
+            for i in range(self.N):
+                with m.If(~self.n_sel[i]):
+                    m.d.comb += self.y.eq(self.a[i])
+            return m
 
         buffs = [IC_buff32() for _ in range(self.N)]
         m.submodules += buffs

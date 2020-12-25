@@ -62,21 +62,21 @@ class ExcCard(Elaboratable):
         """Implements the logic of the exception card."""
         m = Module()
 
-        self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self._mcause,
+        self.multiplex_to_reg(m, clk="ph2w", reg=self._mcause,
                               sels=[
                                   self.z_to_csr & (
                                       self.csr_num == CSRAddr.MCAUSE),
                                   self.save_trap_csrs
                               ],
                               sigs=[self.data_z_in, self.data_x_in])
-        self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self._mepc,
+        self.multiplex_to_reg(m, clk="ph2w", reg=self._mepc,
                               sels=[
                                   self.z_to_csr & (
                                       self.csr_num == CSRAddr.MEPC),
                                   self.save_trap_csrs
                               ],
                               sigs=[self.data_z_in, self.data_y_in])
-        self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self._mtval,
+        self.multiplex_to_reg(m, clk="ph2w", reg=self._mtval,
                               sels=[
                                   (self.z_to_csr & (self.csr_num == CSRAddr.MTVAL)) |
                                   self.save_trap_csrs,
@@ -95,7 +95,7 @@ class ExcCard(Elaboratable):
 
         return m
 
-    def multiplex_to_reg(self, m: Module, clk, reg: Signal, sels: List[Signal], sigs: List[Signal]):
+    def multiplex_to_reg(self, m: Module, clk: str, reg: Signal, sels: List[Signal], sigs: List[Signal]):
         """Sets up a multiplexer with a register.
 
         clk is the clock domain on which the register is clocked.
@@ -110,7 +110,7 @@ class ExcCard(Elaboratable):
         assert len(sels) == len(sigs)
 
         muxreg = IC_reg32_with_mux(
-            clk=clk, N=len(sels), ext_init=self.ext_init)
+            clk=clk, N=len(sels), ext_init=self.ext_init, faster=True)
         m.submodules += muxreg
         m.d.comb += reg.eq(muxreg.q)
         for i in range(len(sels)):

@@ -496,7 +496,7 @@ class SequencerCard(Elaboratable):
         self.set_exception(m, TrapCause.EXC_ILLEGAL_INSTR,
                            mtval=self._instr_to_z)
 
-    def multiplex_to_reg(self, m: Module, clk, reg: Signal, sels: List[Signal], sigs: List[Signal]):
+    def multiplex_to_reg(self, m: Module, clk: str, reg: Signal, sels: List[Signal], sigs: List[Signal]):
         """Sets up a multiplexer with a register.
 
         clk is the clock domain on which the register is clocked.
@@ -511,7 +511,7 @@ class SequencerCard(Elaboratable):
         assert len(sels) == len(sigs)
 
         muxreg = IC_reg32_with_mux(
-            clk=clk, N=len(sels), ext_init=self.ext_init)
+            clk=clk, N=len(sels), ext_init=self.ext_init, faster=True)
         m.submodules += muxreg
         m.d.comb += reg.eq(muxreg.q)
         for i in range(len(sels)):
@@ -522,7 +522,7 @@ class SequencerCard(Elaboratable):
         """Sets up a multiplexer to a bus."""
         assert len(sels) == len(sigs)
 
-        mux = IC_mux32(len(sels))
+        mux = IC_mux32(N=len(sels), faster=True)
         m.submodules += mux
         m.d.comb += bus.eq(mux.y)
         for i in range(len(sels)):
@@ -563,7 +563,7 @@ class SequencerCard(Elaboratable):
             m.d.ph2w += self.state._mip[MInterrupt.MEI].eq(0)
 
     def multiplex_to_csrs_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self.state._mtvec,
+        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mtvec,
                               sels=[
                                   self.z_to_csr & (
                                       self.csr_num == CSRAddr.MTVEC)
@@ -582,7 +582,7 @@ class SequencerCard(Elaboratable):
         exit_trap_mstatus |= (
             self.state._mstatus[MStatus.MPIE] << MStatus.MIE)  # set MIE
 
-        self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self.state._mstatus,
+        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mstatus,
                               sels=[
                                   self.z_to_csr & (
                                       self.csr_num == CSRAddr.MSTATUS),
@@ -594,7 +594,7 @@ class SequencerCard(Elaboratable):
                                   enter_trap_mstatus,
                                   exit_trap_mstatus,
                               ])
-        self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self.state._mie,
+        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mie,
                               sels=[
                                   self.z_to_csr & (
                                       self.csr_num == CSRAddr.MIE)
@@ -624,7 +624,7 @@ class SequencerCard(Elaboratable):
         any_mip_pend = (self._pend_mti | self._clear_pend_mti |
                         self._pend_mei | self._clear_pend_mei)
 
-        self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self.state._mip,
+        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mip,
                               sels=[
                                   self.z_to_csr & (
                                       self.csr_num == CSRAddr.MIP),
@@ -650,7 +650,7 @@ class SequencerCard(Elaboratable):
             m.d.ph1 += self.state._pc.eq(self.data_z_in << 2)
 
     def multiplex_to_pc_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk=m.d.ph1, reg=self.state._pc,
+        self.multiplex_to_reg(m, clk="ph1", reg=self.state._pc,
                               sels=[
                                   self._pc_plus_4_to_pc,
                                   self._x_to_pc,
@@ -675,7 +675,7 @@ class SequencerCard(Elaboratable):
             m.d.ph2w += self.state._tmp.eq(self.data_z_in)
 
     def multiplex_to_tmp_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk=m.d.ph2w, reg=self.state._tmp,
+        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._tmp,
                               sels=[
                                   self._x_to_tmp,
                                   self._z_to_tmp,
@@ -690,7 +690,7 @@ class SequencerCard(Elaboratable):
             m.d.ph1 += self.state.memdata_wr.eq(self.data_z_in)
 
     def multiplex_to_memdata_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk=m.d.ph1, reg=self.state.memdata_wr,
+        self.multiplex_to_reg(m, clk="ph1", reg=self.state.memdata_wr,
                               sels=[
                                   self._z_to_memdata,
                               ],
@@ -711,7 +711,7 @@ class SequencerCard(Elaboratable):
             m.d.ph1 += self.state.memaddr.eq(self.data_z_in << 2)
 
     def multiplex_to_memaddr_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk=m.d.ph1, reg=self.state.memaddr,
+        self.multiplex_to_reg(m, clk="ph1", reg=self.state.memaddr,
                               sels=[
                                   self._pc_plus_4_to_memaddr,
                                   self._x_to_memaddr,
@@ -873,24 +873,45 @@ class SequencerCard(Elaboratable):
                 m.d.comb += self.z_reg.eq(self._rd)
 
     def multiplex_to_reg_nums_chips(self, m: Module):
-        mux_x = IC_mux32(4)
-        mux_y = IC_mux32(4)
-        mux_z = IC_mux32(4)
-        m.submodules += [mux_x, mux_y, mux_z]
-        m.d.comb += self.x_reg.eq(mux_x.y)
-        m.d.comb += self.y_reg.eq(mux_y.y)
-        m.d.comb += self.z_reg.eq(mux_z.y)
-
-        sels = [InstrReg.ZERO, InstrReg.RS1, InstrReg.RS2, InstrReg.RD]
-        sigs = [0, self._rs1, self._rs2, self._rd]
-
-        for i in range(4):
-            m.d.comb += mux_x.n_sel[i].eq(self._x_reg_select != sels[i])
-            m.d.comb += mux_x.a[i].eq(sigs[i])
-            m.d.comb += mux_y.n_sel[i].eq(self._y_reg_select != sels[i])
-            m.d.comb += mux_y.a[i].eq(sigs[i])
-            m.d.comb += mux_z.n_sel[i].eq(self._z_reg_select != sels[i])
-            m.d.comb += mux_z.a[i].eq(sigs[i])
+        self.multiplex_to_bus(m, bus=self.x_reg,
+                              sels=[
+                                  self._x_reg_select == InstrReg.ZERO,
+                                  self._x_reg_select == InstrReg.RS1,
+                                  self._x_reg_select == InstrReg.RS2,
+                                  self._x_reg_select == InstrReg.RD,
+                              ],
+                              sigs=[
+                                  0,
+                                  self._rs1,
+                                  self._rs2,
+                                  self._rd,
+                              ])
+        self.multiplex_to_bus(m, bus=self.y_reg,
+                              sels=[
+                                  self._y_reg_select == InstrReg.ZERO,
+                                  self._y_reg_select == InstrReg.RS1,
+                                  self._y_reg_select == InstrReg.RS2,
+                                  self._y_reg_select == InstrReg.RD,
+                              ],
+                              sigs=[
+                                  0,
+                                  self._rs1,
+                                  self._rs2,
+                                  self._rd,
+                              ])
+        self.multiplex_to_bus(m, bus=self.z_reg,
+                              sels=[
+                                  self._z_reg_select == InstrReg.ZERO,
+                                  self._z_reg_select == InstrReg.RS1,
+                                  self._z_reg_select == InstrReg.RS2,
+                                  self._z_reg_select == InstrReg.RD,
+                              ],
+                              sigs=[
+                                  0,
+                                  self._rs1,
+                                  self._rs2,
+                                  self._rd,
+                              ])
 
     def decode_imm(self, m: Module):
         """Decodes the immediate value out of the instruction."""
@@ -951,7 +972,7 @@ class SequencerCard(Elaboratable):
                 ]
 
     def decode_imm_chips(self, m: Module):
-        mux = IC_mux32(6)
+        mux = IC_mux32(N=6, faster=True)
         gal = IC_GAL_imm_format_decoder()
 
         m.submodules += mux

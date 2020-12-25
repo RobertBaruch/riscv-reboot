@@ -14,10 +14,13 @@ from util import main
 
 
 class IC_7416374(Elaboratable):
-    """Contains logic for a 7416374 16-bit register.
-    """
+    """Contains logic for a 7416374 16-bit register."""
 
-    def __init__(self, clk, ext_init: bool = False):
+    def __init__(self, clk: str, ext_init: bool = False):
+        """Creats a 7416374 register.
+
+        clk is the name of the domain the register will clock on.
+        """
         attrs = [] if not ext_init else [("uninitialized", "")]
 
         self.clk = clk
@@ -32,7 +35,7 @@ class IC_7416374(Elaboratable):
         """Implements the logic of the register."""
         m = Module()
 
-        self.clk += self._q.eq(self.d)
+        m.d[self.clk] += self._q.eq(self.d)
         m.d.comb += self.q.eq(0)
         with m.If(~self.n_oe):
             m.d.comb += self.q.eq(self._q)
@@ -42,13 +45,13 @@ class IC_7416374(Elaboratable):
     @classmethod
     def formal(cls) -> Tuple[Module, List[Signal]]:
         m = Module()
-        ph = ClockDomain("clk")
+        ph = ClockDomain("ph")
         clk = ClockSignal("ph")
 
         m.domains += ph
         m.d.sync += clk.eq(~clk)
 
-        s = IC_7416374(m.d.ph)
+        s = IC_7416374(clk="ph")
 
         m.submodules += s
 
@@ -77,7 +80,7 @@ class IC_7416374(Elaboratable):
 class IC_reg32(Elaboratable):
     """A 32-bit register from a pair of 16-bit registers."""
 
-    def __init__(self, clk, ext_init: bool = False):
+    def __init__(self, clk: str, ext_init: bool = False):
         self.clk = clk
         self.d = Signal(32)
         self.n_oe = Signal()
@@ -105,18 +108,35 @@ class IC_reg32_with_mux(Elaboratable):
     There is no output enable input.
     """
 
-    def __init__(self, clk, N: int, ext_init: bool = False):
+    def __init__(self, clk: str, N: int, ext_init: bool = False, faster: bool = False):
+        """Constructs a 32-bit register with multiplexed inputs.
+
+        Setting faster will make formal verification somewhat faster, since there aren't
+        so many nested submodules and extra logic.
+        """
         self.N = N
         self.clk = clk
-        self.d = Array([Signal(32) for _ in range(N)])
+        self.d = Array([Signal(32, name=f"d{i}") for i in range(N)])
         self.n_sel = Signal(N)
         self.q = Signal(32)
-        self.ext_init = ext_init
+        self._ext_init = ext_init
+        self._faster = faster
 
     def elaborate(self, _: Platform) -> Module:
         """The logic."""
         m = Module()
-        r = IC_reg32(self.clk, self.ext_init)
+
+        if self._faster:
+            attrs = [] if not self._ext_init else [("uninitialized", "")]
+            _q = Signal(32, attrs=attrs)
+            m.d.comb += self.q.eq(_q)
+            c = m.d[self.clk]
+            for i in range(self.N):
+                with m.If(~self.n_sel[i]):
+                    c += _q.eq(self.d[i])
+            return m
+
+        r = IC_reg32(self.clk, self._ext_init)
         mux = IC_mux32(self.N + 1)
         m.submodules += [r, mux]
 
@@ -136,13 +156,13 @@ class IC_reg32_with_mux(Elaboratable):
     @classmethod
     def formal(cls) -> Tuple[Module, List[Signal]]:
         m = Module()
-        ph = ClockDomain("clk")
+        ph = ClockDomain("ph")
         clk = ClockSignal("ph")
 
         m.domains += ph
         m.d.sync += clk.eq(~clk)
 
-        s = IC_reg32_with_mux(m.d.ph, 2)
+        s = IC_reg32_with_mux(clk="ph", N=2, faster=True)
 
         m.submodules += s
 
@@ -210,7 +230,7 @@ class IC_reg32_with_load(Elaboratable):
         m.domains += ph
         m.d.sync += clk.eq(~clk)
 
-        s = IC_reg32_with_load(m.d.ph)
+        s = IC_reg32_with_load(clk="ph")
 
         m.submodules += s
 
