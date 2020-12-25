@@ -13,6 +13,7 @@ from nmigen.asserts import Assert, Assume, Cover, Stable, Past, Initial, AnyCons
 from alu_card import AluCard
 from consts import AluFunc, AluOp, BranchCond, CSRAddr, MemAccessWidth, Opcode
 from consts import SystemFunc, TrapCause, MStatus, MInterrupt
+from exc_card import ExcCard
 from reg_card import RegCard
 from sequencer_card import SequencerCard, SequencerState
 from shift_card import ShiftCard
@@ -30,7 +31,6 @@ class FormalCPU(Elaboratable):
     def __init__(self):
         # CPU bus
         self.mcycle_end = Signal()
-        self.fatal = Signal()
         self.instr_complete = Signal()
         self.x_bus = Signal(32)
         self.y_bus = Signal(32)
@@ -48,6 +48,9 @@ class FormalCPU(Elaboratable):
         self.csr_num = Signal(CSRAddr)
         self.csr_to_x = Signal()
         self.z_to_csr = Signal()
+        self.exception = Signal()
+        self.fatal = Signal()
+        self.save_trap_csrs = Signal()
 
         # Memory bus
         self.mem_rd = Signal()
@@ -63,6 +66,7 @@ class FormalCPU(Elaboratable):
         self.regs = RegCard(ext_init=True)
         self.alu = AluCard()
         self.shifter = ShiftCard()
+        self.exc = ExcCard(ext_init=True)
         self.seq = SequencerCard(ext_init=True, chips=True)
 
     def elaborate(self, _: Platform) -> Module:
@@ -72,6 +76,7 @@ class FormalCPU(Elaboratable):
         m.submodules.alu = self.alu
         m.submodules.regs = self.regs
         m.submodules.shifter = self.shifter
+        m.submodules.exc = self.exc
         m.submodules.sequencer = self.seq
 
         # Faking a CSR card
@@ -91,6 +96,10 @@ class FormalCPU(Elaboratable):
             self.alu.data_x.eq(self.x_bus),
             self.alu.data_y.eq(self.y_bus),
 
+            self.exc.data_x_in.eq(self.x_bus),
+            self.exc.data_y_in.eq(self.y_bus),
+            self.exc.data_z_in.eq(self.z_bus),
+
             self.shifter.data_x.eq(self.x_bus),
             self.shifter.data_y.eq(self.y_bus),
 
@@ -100,7 +109,7 @@ class FormalCPU(Elaboratable):
             self.seq.data_y_in.eq(self.y_bus),
             self.seq.data_z_in.eq(self.z_bus),
 
-            self.x_bus.eq(self.seq.data_x_out |
+            self.x_bus.eq(self.seq.data_x_out | self.exc.data_x_out |
                           self.regs.data_x | _csr_data_x_out),
             self.y_bus.eq(self.seq.data_y_out | self.regs.data_y),
             self.z_bus.eq(self.alu.data_z | self.shifter.data_z |
@@ -135,6 +144,11 @@ class FormalCPU(Elaboratable):
             self.csr_num.eq(self.seq.csr_num),
             self.csr_to_x.eq(self.seq.csr_to_x),
             self.z_to_csr.eq(self.seq.z_to_csr),
+
+            self.exc.csr_num.eq(self.csr_num),
+            self.exc.csr_to_x.eq(self.csr_to_x),
+            self.exc.z_to_csr.eq(self.z_to_csr),
+            self.exc.save_trap_csrs.eq(self.save_trap_csrs),
         ]
 
         # Clock line
@@ -152,8 +166,10 @@ class FormalCPU(Elaboratable):
 
         # Other sequencer signals
         m.d.comb += [
-            self.fatal.eq(self.seq.fatal),
+            self.exception.eq(self.seq.state.exception),
+            self.fatal.eq(self.seq.state.fatal),
             self.instr_complete.eq(self.seq.instr_complete),
+            self.save_trap_csrs.eq(self.seq.save_trap_csrs),
         ]
 
         return m
@@ -242,6 +258,13 @@ class FormalCPU(Elaboratable):
             self.state_before = SequencerState()
             self.state = cpu.seq.state
             self.instr = self.state_before._instr
+
+            self.mcause = Signal(32)
+            self.mepc = Signal(32)
+            self.mtval = Signal(32)
+            self.mcause_before = Signal(32)
+            self.mepc_before = Signal(32)
+            self.mtval_before = Signal(32)
 
             # Instr decode data
             self.opcode = Signal(7)
@@ -776,13 +799,13 @@ class FormalCPU(Elaboratable):
         def verify_seq_csr_written(self, m: Module):
             with m.Switch(self.csr_accessed):
                 with m.Case(CSRAddr.MCAUSE):
-                    m.d.comb += Assert(self.csr_wr_data == self.state._mcause)
+                    m.d.comb += Assert(self.csr_wr_data == self.mcause)
                 with m.Case(CSRAddr.MTVEC):
                     m.d.comb += Assert(self.csr_wr_data == self.state._mtvec)
                 with m.Case(CSRAddr.MEPC):
-                    m.d.comb += Assert(self.csr_wr_data == self.state._mepc)
+                    m.d.comb += Assert(self.csr_wr_data == self.mepc)
                 with m.Case(CSRAddr.MTVAL):
-                    m.d.comb += Assert(self.csr_wr_data == self.state._mtval)
+                    m.d.comb += Assert(self.csr_wr_data == self.mtval)
                 with m.Case(CSRAddr.MSTATUS):
                     m.d.comb += Assert(self.csr_wr_data == self.state._mstatus)
                 with m.Case(CSRAddr.MIE):
@@ -798,16 +821,16 @@ class FormalCPU(Elaboratable):
             with m.Switch(self.csr_accessed):
                 with m.Case(CSRAddr.MCAUSE):
                     m.d.comb += Assert(self.csr_rd_data ==
-                                       self.state_before._mcause)
+                                       self.mcause_before)
                 with m.Case(CSRAddr.MTVEC):
                     m.d.comb += Assert(self.csr_rd_data ==
                                        self.state_before._mtvec)
                 with m.Case(CSRAddr.MEPC):
                     m.d.comb += Assert(self.csr_rd_data ==
-                                       self.state_before._mepc)
+                                       self.mepc_before)
                 with m.Case(CSRAddr.MTVAL):
                     m.d.comb += Assert(self.csr_rd_data ==
-                                       self.state_before._mtval)
+                                       self.mtval_before)
                 with m.Case(CSRAddr.MSTATUS):
                     m.d.comb += Assert(self.csr_rd_data ==
                                        self.state_before._mstatus)
@@ -945,24 +968,22 @@ class FormalCPU(Elaboratable):
             # Anything other than an MRET will be illegal
             with m.If(self.instr == MRET):
                 m.d.comb += [
-                    Assert(self.state._pc == self.state_before._mepc),
+                    Assert(self.state._pc == self.mepc_before),
                     Assert(self.state._mstatus[MStatus.MIE] ==
                            self.state_before._mstatus[MStatus.MPIE]),
                     Assert(self.state._mstatus[MStatus.MPIE] == 1),
                 ]
             with m.Elif(self.instr == ECALL):
                 m.d.comb += [
-                    Assert(self.state_before._mepc == (
-                        self.state_before._pc+4)[:32]),
-                    Assert(self.state._mcause ==
+                    Assert(self.mepc == (self.state_before._pc+4)[:32]),
+                    Assert(self.mcause ==
                            TrapCause.EXC_ECALL_FROM_MACH_MODE),
                     Assert(self.state._pc == base),
                 ]
             with m.Elif(self.instr == EBREAK):
                 m.d.comb += [
-                    Assert(self.state_before._mepc == (
-                        self.state_before._pc+4)[:32]),
-                    Assert(self.state._mcause == TrapCause.EXC_BREAKPOINT),
+                    Assert(self.mepc == (self.state_before._pc+4)[:32]),
+                    Assert(self.mcause == TrapCause.EXC_BREAKPOINT),
                     Assert(self.state._pc == base),
                 ]
             with m.Else():
@@ -1128,44 +1149,44 @@ class FormalCPU(Elaboratable):
                 m.d.comb += Assert(cpu.seq.state.trap)
 
                 # Exceptions load mepc with the PC of the instruction that caused the problem.
-                m.d.comb += Assert(self.state._mepc == self.state_before._pc)
+                m.d.comb += Assert(self.mepc == self.state_before._pc)
 
                 with m.If(is_instr_addr_misaligned):
-                    m.d.comb += Assert(self.state._mcause ==
+                    m.d.comb += Assert(self.mcause ==
                                        TrapCause.EXC_INSTR_ADDR_MISALIGN)
                     with m.Switch(self.opcode):
                         with m.Case(Opcode.JAL, Opcode.JALR, Opcode.BRANCH):
-                            m.d.comb += Assert(self.state._mtval ==
+                            m.d.comb += Assert(self.mtval ==
                                                branch_target)
                         with m.Default():
-                            m.d.comb += Assert(self.state._mtval ==
+                            m.d.comb += Assert(self.mtval ==
                                                self.state_before._pc)
 
                 with m.Elif(is_zero_instr | is_ones_instr | is_unknown_opcode):
-                    m.d.comb += Assert(self.state._mcause ==
+                    m.d.comb += Assert(self.mcause ==
                                        TrapCause.EXC_ILLEGAL_INSTR)
-                    m.d.comb += Assert(self.state._mtval == self.instr)
+                    m.d.comb += Assert(self.mtval == self.instr)
 
                 with m.Elif(is_misaligned_load):
-                    m.d.comb += Assert(self.state._mcause ==
+                    m.d.comb += Assert(self.mcause ==
                                        TrapCause.EXC_LOAD_ADDR_MISALIGN)
-                    m.d.comb += Assert(self.state._mtval == addr)
+                    m.d.comb += Assert(self.mtval == addr)
 
                 with m.Elif(is_misaligned_store):
-                    m.d.comb += Assert(self.state._mcause ==
+                    m.d.comb += Assert(self.mcause ==
                                        TrapCause.EXC_STORE_AMO_ADDR_MISALIGN)
-                    m.d.comb += Assert(self.state._mtval == store_addr)
+                    m.d.comb += Assert(self.mtval == store_addr)
 
         def verify_irq(self, m: Module):
             """Verification for interrupts after trap goes low."""
             with m.If(self.did_ext_irq):
-                m.d.comb += Assert(self.state._mcause ==
+                m.d.comb += Assert(self.mcause ==
                                    TrapCause.INT_MACH_EXTERNAL)
             with m.Elif(self.did_time_irq):
-                m.d.comb += Assert(self.state._mcause ==
+                m.d.comb += Assert(self.mcause ==
                                    TrapCause.INT_MACH_TIMER)
             m.d.comb += [
-                Assert(self.state._mepc == self.int_return_pc),
+                Assert(self.mepc == self.int_return_pc),
                 Assert(self.state._mstatus[MStatus.MPIE] ==
                        self.state_before._mstatus[MStatus.MIE]),
                 Assert(self.state._mstatus[MStatus.MIE] == 0),
@@ -1176,7 +1197,7 @@ class FormalCPU(Elaboratable):
                 m.d.comb += Assert(self.state._pc == base)
             with m.Elif(vec_mode == 1):
                 m.d.comb += Assert(self.state._pc ==
-                                   (base + (self.state._mcause << 2))[:32])
+                                   (base + (self.mcause << 2))[:32])
 
     @classmethod
     def make_clock(cls, m: Module) -> Tuple[Signal, Signal]:
@@ -1242,9 +1263,10 @@ class FormalCPU(Elaboratable):
 
         bef = data.state_before
         state = cpu.seq.state
+        exc = cpu.exc
 
         # Take a snapshot of the state just before latching the instruction.
-        with m.If((mcycle == 0) & (phase_count == 1) & ~cpu.fatal & ~cpu.seq.state._exception):
+        with m.If((mcycle == 0) & (phase_count == 1) & ~cpu.fatal & ~cpu.seq.state.exception):
             m.d.ph2 += bef._pc.eq(state._pc)
             m.d.ph2 += bef._instr_phase.eq(state._instr_phase)
             m.d.ph2 += bef._instr.eq(state._instr)
@@ -1256,11 +1278,11 @@ class FormalCPU(Elaboratable):
             m.d.ph2 += bef._tmp.eq(state._tmp)
             m.d.ph2 += bef.reg_page.eq(state.reg_page)
             m.d.ph2 += bef.trap.eq(state.trap)
-            m.d.ph2 += bef._exception.eq(state._exception)
+            m.d.ph2 += bef.exception.eq(state.exception)
             m.d.ph2 += bef._mtvec.eq(state._mtvec)
-            m.d.ph2 += bef._mcause.eq(state._mcause)
-            m.d.ph2 += bef._mepc.eq(state._mepc)
-            m.d.ph2 += bef._mtval.eq(state._mtval)
+            m.d.ph2 += data.mcause_before.eq(exc._mcause)
+            m.d.ph2 += data.mepc_before.eq(exc._mepc)
+            m.d.ph2 += data.mtval_before.eq(exc._mtval)
             m.d.ph2 += bef._mstatus.eq(state._mstatus)
             m.d.ph2 += bef._mie.eq(state._mie)
             m.d.ph2 += bef._mip.eq(state._mip)
@@ -1277,6 +1299,10 @@ class FormalCPU(Elaboratable):
         for i in range(1, 32):
             m.d.comb += data.regs_after[i].eq(cpu.regs._x_bank._mem[i])
         m.d.comb += data.regs_after[0].eq(0)
+
+        m.d.comb += data.mcause.eq(exc._mcause)
+        m.d.comb += data.mepc.eq(exc._mepc)
+        m.d.comb += data.mtval.eq(exc._mtval)
 
         # If we read or write memory outside the first machine cycle, save it.
         # But complain if we do more than only one read or one write.
@@ -1315,7 +1341,7 @@ class FormalCPU(Elaboratable):
         # m.d.comb += Cover(Past(cpu.seq.fatal, clocks=12))
         m.d.comb += Cover(Past(cpu.seq.time_irq, 18) &
                           Past(cpu.seq.instr_complete, 18) &
-                          ~Past(cpu.seq.state._exception, 18))
+                          ~Past(cpu.seq.state.exception, 18))
         m.d.comb += Cover(Past(cpu.seq.state._instr, 18) == ECALL)
 
         # Asserts and Assumptions based on which instructions we're verifying.
@@ -1378,7 +1404,7 @@ class FormalCPU(Elaboratable):
         if mode in opcodes:
             m.d.comb += Assert(~cpu.fatal)
             m.d.comb += Assert(~cpu.seq.state.trap)
-            m.d.comb += Assume(~cpu.seq.state._exception)
+            m.d.comb += Assume(~cpu.seq.state.exception)
             m.d.comb += Assume(~cpu.seq.time_irq)
             m.d.comb += Assume(~cpu.seq.ext_irq)
             with m.If((mcycle == 0) & (phase_count == 2)):
@@ -1471,7 +1497,7 @@ class FormalCPU(Elaboratable):
 
         if mode == "irq":
             m.d.comb += Assume(~cpu.fatal)
-            m.d.comb += Assume(~cpu.seq.state._exception)
+            m.d.comb += Assume(~cpu.seq.state.exception)
 
             with m.If((phase_count == 4) & ~cpu.seq.state.trap & data.state._mstatus[MStatus.MIE]):
                 m.d.comb += Assume(cpu.seq.time_irq | cpu.seq.ext_irq)
@@ -1523,9 +1549,9 @@ class FormalCPU(Elaboratable):
             m.d.comb += [
                 Assume(cpu.seq.state._pc == init_pc),
                 Assume(cpu.seq.state._mtvec == init_mtvec),
-                Assume(cpu.seq.state._mcause == init_mcause),
-                Assume(cpu.seq.state._mtval == init_mtval),
-                Assume(cpu.seq.state._mepc == init_mepc),
+                Assume(exc._mcause == init_mcause),
+                Assume(exc._mtval == init_mtval),
+                Assume(exc._mepc == init_mepc),
                 Assume(cpu.seq.state._mstatus == init_mstatus),
                 Assume(cpu.seq.state._mie == init_mie),
                 Assume(cpu.seq.state._mip == 0),
