@@ -173,6 +173,7 @@ class SequencerCard(Elaboratable):
         self._shamt_to_y = Signal()
         self._pc_to_y = Signal()
         self._pc_plus_4_to_y = Signal()
+        self._mtvec_30_to_y = Signal()
 
         # -> Z
         self._pc_plus_4_to_z = Signal()
@@ -242,6 +243,7 @@ class SequencerCard(Elaboratable):
             self._shamt_to_y.eq(0),
             self._pc_to_y.eq(0),
             self._pc_plus_4_to_y.eq(0),
+            self._mtvec_30_to_y.eq(0),
             self.alu_op_to_z.eq(AluOp.NONE),
             self._pc_plus_4_to_z.eq(0),
             self._tmp_to_z.eq(0),
@@ -627,6 +629,8 @@ class SequencerCard(Elaboratable):
             m.d.comb += self.data_y_out.eq(self.state._pc)
         with m.Elif(self._pc_plus_4_to_y):
             m.d.comb += self.data_y_out.eq(self._pc_plus_4)
+        with m.Elif(self._mtvec_30_to_y):
+            m.d.comb += self.data_y_out.eq(self.state._mtvec >> 2)
 
     def multiplex_to_y_chips(self, m: Module):
         self.multiplex_to_bus(m, bus=self.data_y_out,
@@ -635,12 +639,14 @@ class SequencerCard(Elaboratable):
                                   self._shamt_to_y,
                                   self._pc_to_y,
                                   self._pc_plus_4_to_y,
+                                  self._mtvec_30_to_y,
                               ],
                               sigs=[
                                   self._imm,
                                   self._shamt,
                                   self.state._pc,
                                   self._pc_plus_4,
+                                  self.state._mtvec >> 2,
                               ])
 
     def multiplex_to_z(self, m: Module):
@@ -920,14 +926,14 @@ class SequencerCard(Elaboratable):
         with m.Else():
             vec_mode = self.state._mtvec[:2]
 
-            m.d.comb += self.data_y_out.eq(self.state._mtvec >> 2)
+            m.d.comb += self._mtvec_30_to_y.eq(1)  # mtvec >> 2
             with m.If(all_true(is_int, vec_mode == 1)):
                 m.d.comb += [
                     self._mcause_to_csr_num.eq(1),
                     self.csr_to_x.eq(1),
                 ]
             with m.Else():
-                m.d.comb += self.data_x_out.eq(0)
+                m.d.comb += self.data_x_out.eq(0)  # Shouldn't need this
 
             m.d.ph1 += self.state.trap.eq(0)
             m.d.comb += [
