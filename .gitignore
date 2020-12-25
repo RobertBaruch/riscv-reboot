@@ -1,0 +1,14 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# RTLIL files
+*.il
+
+# BMC runs
+*-bmc
+*.gtkw
+
+# VSCode nonsense
+.vscode
