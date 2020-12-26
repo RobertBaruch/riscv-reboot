@@ -1463,6 +1463,8 @@ class FormalCPU(Elaboratable):
                     m.d.comb += Assume(data.rd <= 3)
             # Formal verification just after we've completed an instruction.
             with m.If(Past(cpu.instr_complete)):
+                # Check everything but the LSb because of JALR.
+                m.d.comb += Assert(cpu.seq.state._pc[1:] == cpu.memaddr[1:])
                 data.verify_instr(m)
 
         if mode == "ecall":
@@ -1474,6 +1476,7 @@ class FormalCPU(Elaboratable):
                 m.d.comb += Assume((data.instr == ECALL) |
                                    (data.instr == EBREAK))
             with m.If(Fell(cpu.seq.state.trap)):
+                m.d.comb += Assert(cpu.seq.state._pc == cpu.memaddr)
                 data.verify_instr(m)
 
         if mode == "fatal" or mode == "fatal1" or mode == "fatal2" or mode == "fatal3" or mode == "fatal4":

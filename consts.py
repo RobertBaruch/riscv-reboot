@@ -199,3 +199,11 @@ class InstrReg(IntEnum):
     RS1 = 1
     RS2 = 2
     RD = 3
+
+
+@unique
+class NextPC(IntEnum):
+    PC_PLUS_4 = 0
+    MEMADDR = 1
+    Z = 2
+    X = 3

@@ -9,9 +9,9 @@ from nmigen.build import Platform
 from nmigen.asserts import Assert, Assume, Cover, Stable, Past
 
 from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
-from consts import Opcode, OpcodeFormat, SystemFunc, TrapCause, PrivFunc, MStatus
-from consts import MInterrupt
+from consts import Opcode, OpcodeFormat, SystemFunc, TrapCause, PrivFunc
 from consts import InstrReg
+from consts import NextPC
 from transparent_latch import TransparentLatch
 from util import main
 from IC_7416244 import IC_mux32
@@ -142,7 +142,6 @@ class SequencerCard(Elaboratable):
         self._instr_latch = TransparentLatch(32)
         self._pc_plus_4 = Signal(32)
         self._next_instr_phase = Signal(len(self.state._instr_phase))
-        self._is_last_instr_cycle = Signal()
         self._next_reg_page = Signal()
 
         # Instruction decoding
@@ -273,7 +272,6 @@ class SequencerCard(Elaboratable):
             self.data_x_out.eq(0),
             self.data_y_out.eq(0),
             self.data_z_out.eq(0),
-            self._is_last_instr_cycle.eq(0),
             self.instr_complete.eq(0),
             self.csr_to_x.eq(0),
             self.z_to_csr.eq(0),
@@ -297,14 +295,26 @@ class SequencerCard(Elaboratable):
 
         return m
 
-    def process(self, m: Module):
+    def next_instr(self, m: Module, next_pc: NextPC = NextPC.PC_PLUS_4):
+        """Sets signals to advance to the next instruction.
 
-        with m.If(self._is_last_instr_cycle):
-            m.d.comb += self.instr_complete.eq(self.mcycle_end)
-            with m.If(~self._x_to_pc & ~self._z_to_pc & ~self._memaddr_to_pc & ~self._memdata_to_pc):
-                m.d.comb += self._pc_plus_4_to_pc.eq(1)
-            with m.If(~self._x_to_memaddr & ~self._z_to_memaddr & ~self._memdata_to_memaddr):
-                m.d.comb += self._pc_plus_4_to_memaddr.eq(1)
+        next_pc is the signal to load the PC and MEMADDR registers with
+        at the end of the instruction cycle.
+        """
+        m.d.comb += self.instr_complete.eq(self.mcycle_end)
+        if next_pc == NextPC.PC_PLUS_4:
+            m.d.comb += self._pc_plus_4_to_pc.eq(1)
+            m.d.comb += self._pc_plus_4_to_memaddr.eq(1)
+        elif next_pc == NextPC.MEMADDR:
+            m.d.comb += self._memaddr_to_pc.eq(1)
+        elif next_pc == NextPC.Z:
+            m.d.comb += self._z_to_pc.eq(1)
+            m.d.comb += self._z_to_memaddr.eq(1)
+        elif next_pc == NextPC.X:
+            m.d.comb += self._x_to_pc.eq(1)
+            m.d.comb += self._x_to_memaddr.eq(1)
+
+    def process(self, m: Module):
 
         # We only check interrupts once we're about to load an instruction but we're not already
         # trapping an interrupt.
@@ -965,7 +975,7 @@ class SequencerCard(Elaboratable):
             self.alu_op_to_z.eq(AluOp.ADD),
             self._z_reg_select.eq(InstrReg.RD),
         ]
-        m.d.comb += self._is_last_instr_cycle.eq(1)
+        self.next_instr(m)
 
     def handle_auipc(self, m: Module):
         """Adds the AUIPC logic to the given module.
@@ -987,7 +997,7 @@ class SequencerCard(Elaboratable):
             self.alu_op_to_z.eq(AluOp.ADD),
             self._z_reg_select.eq(InstrReg.RD),
         ]
-        m.d.comb += self._is_last_instr_cycle.eq(1)
+        self.next_instr(m)
 
     def handle_op_imm(self, m: Module):
         """Adds the OP_IMM logic to the given module.
@@ -1034,7 +1044,7 @@ class SequencerCard(Elaboratable):
                     m.d.comb += self.alu_op_to_z.eq(AluOp.OR)
                 with m.Case(AluFunc.AND):
                     m.d.comb += self.alu_op_to_z.eq(AluOp.AND)
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_op(self, m: Module):
         """Adds the OP logic to the given module.
@@ -1082,7 +1092,7 @@ class SequencerCard(Elaboratable):
                     m.d.comb += self.alu_op_to_z.eq(AluOp.OR)
                 with m.Case(AluFunc.AND):
                     m.d.comb += self.alu_op_to_z.eq(AluOp.AND)
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_jal(self, m: Module):
         """Adds the JAL logic to the given module.
@@ -1121,9 +1131,8 @@ class SequencerCard(Elaboratable):
                 m.d.comb += [
                     self._pc_plus_4_to_z.eq(1),
                     self._z_reg_select.eq(InstrReg.RD),
-                    self._memaddr_to_pc.eq(1),
-                    self._is_last_instr_cycle.eq(1),
                 ]
+                self.next_instr(m, NextPC.MEMADDR)
 
     def handle_jalr(self, m: Module):
         """Adds the JALR logic to the given module.
@@ -1158,9 +1167,8 @@ class SequencerCard(Elaboratable):
                 m.d.comb += [
                     self._pc_plus_4_to_z.eq(1),
                     self._z_reg_select.eq(InstrReg.RD),
-                    self._memaddr_to_pc.eq(1),
-                    self._is_last_instr_cycle.eq(1),
                 ]
+                self.next_instr(m, NextPC.MEMADDR)
 
     def handle_branch(self, m: Module):
         """Adds the BRANCH logic to the given module.
@@ -1229,11 +1237,7 @@ class SequencerCard(Elaboratable):
                 ]
 
                 with m.If(self.data_z_in[0:2] == 0):
-                    m.d.comb += [
-                        self._z_to_pc.eq(1),
-                        self._z_to_memaddr.eq(1),
-                        self._is_last_instr_cycle.eq(1),
-                    ]
+                    self.next_instr(m, NextPC.Z)
 
                 with m.Else():
                     m.d.comb += self._next_instr_phase.eq(2)
@@ -1407,7 +1411,7 @@ class SequencerCard(Elaboratable):
                         self.alu_op_to_z.eq(AluOp.SRL),
                     ]
 
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_store(self, m: Module):
         """Adds the STORE logic to the given module.
@@ -1520,7 +1524,7 @@ class SequencerCard(Elaboratable):
                     m.d.comb += self.mem_wr_mask.eq(0b1111)
 
             m.d.comb += self.mem_wr.eq(1)
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_system(self, m: Module):
         """Adds the SYSTEM logic to the given module.
@@ -1590,7 +1594,7 @@ class SequencerCard(Elaboratable):
                 self._tmp_to_z.eq(1),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_CSRRWI(self, m: Module):
         m.d.comb += self._funct12_to_csr_num.eq(1)
@@ -1618,7 +1622,7 @@ class SequencerCard(Elaboratable):
                 self._tmp_to_z.eq(1),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_CSRRS(self, m: Module):
         m.d.comb += self._funct12_to_csr_num.eq(1)
@@ -1639,7 +1643,7 @@ class SequencerCard(Elaboratable):
                 self._tmp_to_z.eq(1),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_CSRRSI(self, m: Module):
         m.d.comb += self._funct12_to_csr_num.eq(1)
@@ -1659,7 +1663,7 @@ class SequencerCard(Elaboratable):
                 self._tmp_to_z.eq(1),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_CSRRC(self, m: Module):
         m.d.comb += self._funct12_to_csr_num.eq(1)
@@ -1680,7 +1684,7 @@ class SequencerCard(Elaboratable):
                 self._tmp_to_z.eq(1),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_CSRRCI(self, m: Module):
         m.d.comb += self._funct12_to_csr_num.eq(1)
@@ -1700,7 +1704,7 @@ class SequencerCard(Elaboratable):
                 self._tmp_to_z.eq(1),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
-            m.d.comb += self._is_last_instr_cycle.eq(1)
+            self.next_instr(m)
 
     def handle_PRIV(self, m: Module):
         with m.Switch(self._funct12):
@@ -1726,10 +1730,9 @@ class SequencerCard(Elaboratable):
         m.d.comb += [
             self._mepc_num_to_csr_num.eq(1),
             self.csr_to_x.eq(1),
-            self._x_to_pc.eq(1),
             self.exit_trap.eq(1),
-            self._is_last_instr_cycle.eq(1),
         ]
+        self.next_instr(m, NextPC.X)
 
     def handle_ECALL(self, m: Module):
         """Handles the ECALL instruction.
