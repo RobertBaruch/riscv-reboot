@@ -34,7 +34,7 @@ class SequencerROM(Elaboratable):
         self._alu_func = Signal(4)
 
         ##############
-        # Outputs (48 bits + 19 + TrapCauseSelect (4 bits))
+        # Outputs (48 bits + 28 other bits = 76 bits total)
         ##############
 
         # Raised on the last phase of an instruction.
@@ -114,6 +114,9 @@ class SequencerROM(Elaboratable):
         self._z_to_memdata = Signal()
 
         # memory load shamt
+        # There's not a lot of point in multiplexing this, since
+        # there are 5 possible values, requiring 3 bits instead of
+        # 5. Not much of a savings.
         self._shamt = Signal(5)
 
         # -> various CSRs

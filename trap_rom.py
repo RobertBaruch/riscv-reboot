@@ -27,7 +27,7 @@ class TrapROM(Elaboratable):
         self.vec_mode = Signal(2)
         self._instr_phase = Signal(2)
 
-        # Outputs (28 bits plus CSRAddr and trap cause)
+        # Outputs (32 bits)
 
         self.set_instr_complete = Signal()
 
@@ -62,7 +62,7 @@ class TrapROM(Elaboratable):
         self._z_30_to_memaddr = Signal()
 
         # -> various CSRs
-        self._trapcause_select = Signal(TrapCauseSelect)
+        self._trapcause_select = Signal(TrapCauseSelect)  # 4 bits
         self.clear_pend_mti = Signal()
         self.clear_pend_mei = Signal()
 
