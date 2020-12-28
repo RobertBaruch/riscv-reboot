@@ -9,7 +9,6 @@ from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
 from consts import OpcodeFormat, SystemFunc, TrapCause
 from consts import InstrReg, OpcodeSelect
 from consts import NextPC
-from util import all_true
 
 
 class SequencerROM(Elaboratable):
@@ -19,9 +18,8 @@ class SequencerROM(Elaboratable):
         # Control line
         self.enable_sequencer_rom = Signal()
 
-        # Inputs: 10 + 11 decoder
+        # Inputs: 9 + 11 decoder
 
-        self.is_interrupted = Signal()
         self.memaddr_2_lsb = Signal(2)
         self.branch_cond = Signal()
         self._instr_phase = Signal(2)
@@ -62,10 +60,6 @@ class SequencerROM(Elaboratable):
 
         # Internals
 
-        # This opens the instr transparent latch to memdata. The enable
-        # (i.e. load_instr) on the latch is a register, so setting load_instr
-        # now opens the transparent latch next.
-        self._load_instr = Signal(reset=1)
         self._next_instr_phase = Signal(2)
 
         self._imm_format = Signal(OpcodeFormat)
@@ -182,7 +176,6 @@ class SequencerROM(Elaboratable):
             self._z_30_to_memaddr.eq(0),
             self._z_to_memdata.eq(0),
             self.mem_rd.eq(0),
-            self._load_instr.eq(0),
             self.mem_wr.eq(0),
             self.mem_wr_mask.eq(0),
             self._shamt.eq(0),
@@ -211,27 +204,6 @@ class SequencerROM(Elaboratable):
         ]
 
         with m.If(self.enable_sequencer_rom):
-
-            # 3 independent cases:
-            #
-            # 1. We were interrupted and the instruction is complete.
-            # 2. We're at the beginning of an instruction, and not interrupted.
-            # 3. Instruction handling
-            #
-            # Maybe we can handle the first two with just some OR gates
-            # on the output signals.
-
-            # True when instr_complete and ~trap and (mei or mti pending).
-            with m.If(self.is_interrupted):
-                # m.d.comb += self._pc_to_z.eq(1)  # Does this do anything?
-                # m.d.comb += self._next_instr_phase.eq(0)
-                m.d.comb += self.load_trap.eq(1)
-                m.d.comb += self.next_trap.eq(1)
-
-            # Load the instruction on instruction phase 0 unless we've been interrupted.
-            with m.If(all_true(self._instr_phase == 0, ~self.is_interrupted)):
-                m.d.comb += self._load_instr.eq(1)
-                m.d.comb += self.mem_rd.eq(1)
 
             # Output control signals
             with m.Switch(self.opcode_select):

@@ -19,6 +19,7 @@ from IC_7416374 import IC_reg32_with_mux
 from IC_GAL import IC_GAL_imm_format_decoder
 from sequencer_rom import SequencerROM
 from trap_rom import TrapROM
+from irq_load_rom import IrqLoadInstrROM
 
 
 class SequencerState:
@@ -84,6 +85,7 @@ class SequencerCard(Elaboratable):
         self.state = SequencerState(ext_init)
         self.rom = SequencerROM()
         self.trap_rom = TrapROM()
+        self.irq_load_rom = IrqLoadInstrROM()
 
         # A clock-based signal, high only at the end of a machine
         # cycle (i.e. phase 5, the very end of the write phase).
@@ -245,10 +247,10 @@ class SequencerCard(Elaboratable):
         """Implements the logic of the sequencer card."""
         m = Module()
 
-        # Instruction latch
-        m.submodules += self._instr_latch
+        m.submodules.instr_latch = self._instr_latch
         m.submodules.rom = self.rom
         m.submodules.trap_rom = self.trap_rom
+        m.submodules.irq_load_rom = self.irq_load_rom
 
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
         m.d.comb += self.vec_mode.eq(self.state._mtvec[:2])
@@ -275,16 +277,18 @@ class SequencerCard(Elaboratable):
             all_true(self.state._pc[0:2] != 0, ~self.state.trap))
 
         self.encode_opcode_select(m)
-        self.connect_rom(m)
+        self.connect_roms(m)
         self.process(m)
         self.updates(m)
 
         return m
 
-    def connect_rom(self, m: Module):
+    def connect_roms(self, m: Module):
         m.d.comb += self.enable_sequencer_rom.eq(
             self.trap_rom.enable_sequencer_rom)
         m.d.comb += self.rom.enable_sequencer_rom.eq(self.enable_sequencer_rom)
+        m.d.comb += self.irq_load_rom.enable_sequencer_rom.eq(
+            self.enable_sequencer_rom)
 
         # Inputs
         m.d.comb += [
@@ -299,7 +303,9 @@ class SequencerCard(Elaboratable):
             self.trap_rom.vec_mode.eq(self.vec_mode),
             self.trap_rom._instr_phase.eq(self.state._instr_phase),
 
-            self.rom.is_interrupted.eq(self.is_interrupted),
+            self.irq_load_rom.is_interrupted.eq(self.is_interrupted),
+            self.irq_load_rom._instr_phase.eq(self.state._instr_phase),
+
             self.rom._instr_phase.eq(self.state._instr_phase),
 
             self.rom.memaddr_2_lsb.eq(self.memaddr_2_lsb),
@@ -336,7 +342,7 @@ class SequencerCard(Elaboratable):
             self.z_to_csr.eq(self.rom.z_to_csr),
 
             # Memory
-            self.mem_rd.eq(self.rom.mem_rd),
+            self.mem_rd.eq(self.rom.mem_rd | self.irq_load_rom.mem_rd),
             self.mem_wr.eq(self.rom.mem_wr),
             # Bytes in memory word to write
             self.mem_wr_mask.eq(self.rom.mem_wr_mask),
@@ -346,7 +352,7 @@ class SequencerCard(Elaboratable):
             # This opens the instr transparent latch to memdata. The enable
             # (i.e. load_instr) on the latch is a register, so setting load_instr
             # now opens the transparent latch next.
-            self._load_instr.eq(self.rom._load_instr),
+            self._load_instr.eq(self.irq_load_rom._load_instr),
             self._next_instr_phase.eq(
                 self.rom._next_instr_phase | self.trap_rom._next_instr_phase),
 
@@ -429,8 +435,10 @@ class SequencerCard(Elaboratable):
             self.exit_trap.eq(self.rom.exit_trap | self.trap_rom.exit_trap),
 
             # Signals for next registers
-            self.load_trap.eq(self.rom.load_trap | self.trap_rom.load_trap),
-            self.next_trap.eq(self.rom.next_trap | self.trap_rom.next_trap),
+            self.load_trap.eq(
+                self.rom.load_trap | self.trap_rom.load_trap | self.irq_load_rom.load_trap),
+            self.next_trap.eq(
+                self.rom.next_trap | self.trap_rom.next_trap | self.irq_load_rom.next_trap),
             self.load_exception.eq(
                 self.rom.load_exception | self.trap_rom.load_exception),
             self.next_exception.eq(
