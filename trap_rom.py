@@ -5,8 +5,8 @@
 from nmigen import Signal, Module, Elaboratable
 from nmigen.build import Platform
 
-from consts import AluOp, CSRAddr
-from consts import TrapCause
+from consts import AluOp
+from consts import TrapCauseSelect
 from util import all_true
 
 
@@ -35,7 +35,6 @@ class TrapROM(Elaboratable):
         self.save_trap_csrs = Signal()
 
         # CSR lines
-        self.csr_num = Signal(CSRAddr)
         self.csr_to_x = Signal()
 
         self._next_instr_phase = Signal(2)
@@ -63,7 +62,7 @@ class TrapROM(Elaboratable):
         self._z_30_to_memaddr = Signal()
 
         # -> various CSRs
-        self._trapcause = Signal(TrapCause)
+        self._trapcause_select = Signal(TrapCauseSelect)
         self.clear_pend_mti = Signal()
         self.clear_pend_mei = Signal()
 
@@ -87,7 +86,6 @@ class TrapROM(Elaboratable):
         m.d.comb += [
             self.set_instr_complete.eq(0),
             self.save_trap_csrs.eq(0),
-            self.csr_num.eq(0),
             self.csr_to_x.eq(0),
             self._next_instr_phase.eq(0),
             self._trapcause_to_x.eq(0),
@@ -100,7 +98,7 @@ class TrapROM(Elaboratable):
             self._z_30_to_pc.eq(0),
             self._mcause_to_csr_num.eq(0),
             self._z_30_to_memaddr.eq(0),
-            self._trapcause.eq(0),
+            self._trapcause_select.eq(TrapCauseSelect.NONE),
             self.enter_trap.eq(0),
             self.exit_trap.eq(0),
             self.clear_pend_mti.eq(0),
@@ -129,23 +127,23 @@ class TrapROM(Elaboratable):
         # True when pc[0:2] != 0 and ~trap.
         with m.Elif(self.instr_misalign):
             self.set_exception(
-                m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._pc_to_z)
+                m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=self._pc_to_z)
 
         with m.Elif(self.bad_instr):
             self.set_exception(
-                m, TrapCause.EXC_ILLEGAL_INSTR, mtval=self._instr_to_z)
+                m, TrapCauseSelect.EXC_ILLEGAL_INSTR, mtval=self._instr_to_z)
 
         with m.Else():
             m.d.comb += self.enable_sequencer_rom.eq(1)
 
         return m
 
-    def set_exception(self, m: Module, exc: TrapCause, mtval: Signal, fatal: bool = True):
+    def set_exception(self, m: Module, exc: TrapCauseSelect, mtval: Signal, fatal: bool = True):
         m.d.comb += self.load_exception.eq(1)
         m.d.comb += self.next_exception.eq(1)
         m.d.comb += self.next_fatal.eq(1 if fatal else 0)
 
-        m.d.comb += self._trapcause.eq(exc)
+        m.d.comb += self._trapcause_select.eq(exc)
         m.d.comb += self._trapcause_to_x.eq(1)
 
         m.d.comb += mtval.eq(1)  # what goes to z
@@ -177,11 +175,13 @@ class TrapROM(Elaboratable):
             # If set_exception was called, we've already saved the trap CSRs.
             with m.If(is_int):
                 with m.If(self.mei_pend):
-                    m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_EXTERNAL)
+                    m.d.comb += self._trapcause_select.eq(
+                        TrapCauseSelect.INT_MACH_EXTERNAL)
                     m.d.comb += self._trapcause_to_x.eq(1)
                     m.d.comb += self.clear_pend_mei.eq(1)
                 with m.Elif(self.mti_pend):
-                    m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_TIMER)
+                    m.d.comb += self._trapcause_select.eq(
+                        TrapCauseSelect.INT_MACH_TIMER)
                     m.d.comb += self._trapcause_to_x.eq(1)
                     m.d.comb += self.clear_pend_mti.eq(1)
 

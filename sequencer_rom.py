@@ -5,8 +5,8 @@
 from nmigen import Signal, Module, Elaboratable
 from nmigen.build import Platform
 
-from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
-from consts import OpcodeFormat, SystemFunc, TrapCause
+from consts import AluOp, AluFunc, BranchCond, MemAccessWidth
+from consts import OpcodeFormat, SystemFunc, TrapCauseSelect
 from consts import InstrReg, OpcodeSelect
 from consts import NextPC
 
@@ -34,21 +34,16 @@ class SequencerROM(Elaboratable):
         self._alu_func = Signal(4)
 
         ##############
-        # Outputs
+        # Outputs (48 bits + 19 + TrapCauseSelect (4 bits))
         ##############
 
         # Raised on the last phase of an instruction.
         self.set_instr_complete = Signal()
 
-        self.x_reg = Signal(5)
-        self.y_reg = Signal(5)
-        self.z_reg = Signal(5)
-
         # Raised when the exception card should store trap data.
         self.save_trap_csrs = Signal()
 
         # CSR lines
-        self.csr_num = Signal(CSRAddr)
         self.csr_to_x = Signal()
         self.z_to_csr = Signal()
 
@@ -62,11 +57,11 @@ class SequencerROM(Elaboratable):
 
         self._next_instr_phase = Signal(2)
 
-        self._imm_format = Signal(OpcodeFormat)
+        self._imm_format = Signal(OpcodeFormat)  # 3 bits
 
-        self._x_reg_select = Signal(InstrReg)
-        self._y_reg_select = Signal(InstrReg)
-        self._z_reg_select = Signal(InstrReg)
+        self._x_reg_select = Signal(InstrReg)  # 2 bits
+        self._y_reg_select = Signal(InstrReg)  # 2 bits
+        self._z_reg_select = Signal(InstrReg)  # 2 bits
 
         # -> X
         self.reg_to_x = Signal()
@@ -122,7 +117,7 @@ class SequencerROM(Elaboratable):
         self._shamt = Signal(5)
 
         # -> various CSRs
-        self._trapcause = Signal(TrapCause)
+        self._trapcause_select = Signal(TrapCauseSelect)  # 4 bits
         self.clear_pend_mti = Signal()
         self.clear_pend_mei = Signal()
 
@@ -143,7 +138,7 @@ class SequencerROM(Elaboratable):
         # Defaults
         m.d.comb += [
             self._next_instr_phase.eq(0),
-            self._trapcause.eq(0),
+            self._trapcause_select.eq(TrapCauseSelect.NONE),
             self.reg_to_x.eq(0),
             self._pc_to_x.eq(0),
             self._memdata_to_x.eq(0),
@@ -184,7 +179,6 @@ class SequencerROM(Elaboratable):
             self._funct12_to_csr_num.eq(0),
             self._mepc_num_to_csr_num.eq(0),
             self._mcause_to_csr_num.eq(0),
-            self.csr_num.eq(0),
             self._x_reg_select.eq(0),
             self._y_reg_select.eq(0),
             self._z_reg_select.eq(0),
@@ -270,12 +264,12 @@ class SequencerROM(Elaboratable):
             m.d.comb += self._x_to_pc.eq(1)
             m.d.comb += self._x_to_memaddr.eq(1)
 
-    def set_exception(self, m: Module, exc: TrapCause, mtval: Signal, fatal: bool = True):
+    def set_exception(self, m: Module, exc: TrapCauseSelect, mtval: Signal, fatal: bool = True):
         m.d.comb += self.load_exception.eq(1)
         m.d.comb += self.next_exception.eq(1)
         m.d.comb += self.next_fatal.eq(1 if fatal else 0)
 
-        m.d.comb += self._trapcause.eq(exc)
+        m.d.comb += self._trapcause_select.eq(exc)
         m.d.comb += self._trapcause_to_x.eq(1)
 
         m.d.comb += mtval.eq(1)  # what goes to z
@@ -292,7 +286,7 @@ class SequencerROM(Elaboratable):
         m.d.comb += self._next_instr_phase.eq(0)
 
     def handle_illegal_instr(self, m: Module):
-        self.set_exception(m, TrapCause.EXC_ILLEGAL_INSTR,
+        self.set_exception(m, TrapCauseSelect.EXC_ILLEGAL_INSTR,
                            mtval=self._instr_to_z)
 
     def handle_lui(self, m: Module):
@@ -467,7 +461,7 @@ class SequencerROM(Elaboratable):
         with m.Else():
             with m.If(self.memaddr_2_lsb[1] != 0):
                 self.set_exception(
-                    m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_to_z)
             with m.Else():
                 m.d.comb += [
                     self._pc_plus_4_to_z.eq(1),
@@ -503,7 +497,7 @@ class SequencerROM(Elaboratable):
         with m.Else():
             with m.If(self.memaddr_2_lsb[1] != 0):
                 self.set_exception(
-                    m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_lsb_masked_to_z)
+                    m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_lsb_masked_to_z)
             with m.Else():
                 m.d.comb += [
                     self._pc_plus_4_to_z.eq(1),
@@ -571,7 +565,7 @@ class SequencerROM(Elaboratable):
 
         with m.Else():
             self.set_exception(
-                m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._tmp_to_z)
+                m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=self._tmp_to_z)
 
     def handle_load(self, m: Module):
         """Adds the LOAD logic to the given module.
@@ -657,12 +651,12 @@ class SequencerROM(Elaboratable):
             with m.If(self._funct3.matches(MemAccessWidth.H, MemAccessWidth.HU) &
                       self.memaddr_2_lsb[0]):
                 self.set_exception(
-                    m, TrapCause.EXC_LOAD_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN, mtval=self._memaddr_to_z)
 
             with m.Elif((self._funct3 == MemAccessWidth.W) &
                         (self.memaddr_2_lsb != 0)):
                 self.set_exception(
-                    m, TrapCause.EXC_LOAD_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN, mtval=self._memaddr_to_z)
 
             with m.Elif(~self._funct3.matches(MemAccessWidth.B, MemAccessWidth.BU,
                                               MemAccessWidth.H, MemAccessWidth.HU,
@@ -781,11 +775,11 @@ class SequencerROM(Elaboratable):
             # Check for exception conditions first
             with m.If((self._funct3 == MemAccessWidth.H) & self.memaddr_2_lsb[0]):
                 self.set_exception(
-                    m, TrapCause.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self._memaddr_to_z)
 
             with m.Elif((self._funct3 == MemAccessWidth.W) & (self.memaddr_2_lsb != 0)):
                 self.set_exception(
-                    m, TrapCause.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self._memaddr_to_z)
 
             with m.Elif(~self._funct3.matches(MemAccessWidth.B,
                                               MemAccessWidth.H,
@@ -1048,7 +1042,7 @@ class SequencerROM(Elaboratable):
         so we have no choice but to disable interrupts for an ECALL.
         """
         self.set_exception(
-            m, TrapCause.EXC_ECALL_FROM_MACH_MODE, mtval=self._pc_to_z, fatal=False)
+            m, TrapCauseSelect.EXC_ECALL_FROM_MACH_MODE, mtval=self._pc_to_z, fatal=False)
 
     def handle_EBREAK(self, m: Module):
         """Handles the EBREAK instruction.
@@ -1060,4 +1054,4 @@ class SequencerROM(Elaboratable):
         so we have no choice but to disable interrupts for an EBREAK.
         """
         self.set_exception(
-            m, TrapCause.EXC_BREAKPOINT, mtval=self._pc_to_z, fatal=False)
+            m, TrapCauseSelect.EXC_BREAKPOINT, mtval=self._pc_to_z, fatal=False)

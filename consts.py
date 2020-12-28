@@ -192,6 +192,20 @@ class TrapCause(IntEnum):
 
 
 @unique
+class TrapCauseSelect(IntEnum):
+    """Selectors for trap causes."""
+    NONE = 0
+    EXC_INSTR_ADDR_MISALIGN = 1
+    EXC_ILLEGAL_INSTR = 2
+    EXC_BREAKPOINT = 3
+    EXC_LOAD_ADDR_MISALIGN = 4
+    EXC_STORE_AMO_ADDR_MISALIGN = 5
+    EXC_ECALL_FROM_MACH_MODE = 6
+    INT_MACH_EXTERNAL = 7
+    INT_MACH_TIMER = 8
+
+
+@unique
 class CSRAddr(IntEnum):
     """CSR addresses."""
     MSTATUS = 0x300

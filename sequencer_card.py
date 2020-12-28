@@ -10,7 +10,7 @@ from nmigen.asserts import Assert, Assume, Cover, Stable, Past
 
 from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
 from consts import Opcode, OpcodeFormat, SystemFunc, TrapCause, PrivFunc
-from consts import InstrReg, OpcodeSelect
+from consts import InstrReg, OpcodeSelect, TrapCauseSelect
 from consts import NextPC, Instr
 from transparent_latch import TransparentLatch
 from util import main, all_true
@@ -225,6 +225,7 @@ class SequencerCard(Elaboratable):
 
         # -> various CSRs
         self._trapcause = Signal(TrapCause)
+        self._trapcause_select = Signal(TrapCauseSelect)
         self.clear_pend_mti = Signal()
         self.clear_pend_mei = Signal()
         self.mei_pend = Signal()
@@ -277,6 +278,7 @@ class SequencerCard(Elaboratable):
             all_true(self.state._pc[0:2] != 0, ~self.state.trap))
 
         self.encode_opcode_select(m)
+        self.encode_trapcause(m)
         self.connect_roms(m)
         self.process(m)
         self.updates(m)
@@ -328,16 +330,11 @@ class SequencerCard(Elaboratable):
             self.set_instr_complete.eq(
                 self.rom.set_instr_complete | self.trap_rom.set_instr_complete),
 
-            self.x_reg.eq(self.rom.x_reg),
-            self.y_reg.eq(self.rom.y_reg),
-            self.z_reg.eq(self.rom.z_reg),
-
             # Raised when the exception card should store trap data.
             self.save_trap_csrs.eq(
                 self.rom.save_trap_csrs | self.trap_rom.save_trap_csrs),
 
             # CSR lines
-            self.csr_num.eq(self.rom.csr_num | self.trap_rom.csr_num),
             self.csr_to_x.eq(self.rom.csr_to_x | self.trap_rom.csr_to_x),
             self.z_to_csr.eq(self.rom.z_to_csr),
 
@@ -425,7 +422,8 @@ class SequencerCard(Elaboratable):
             self._shamt.eq(self.rom._shamt),
 
             # -> various CSRs
-            self._trapcause.eq(self.rom._trapcause | self.trap_rom._trapcause),
+            self._trapcause_select.eq(
+                self.rom._trapcause_select | self.trap_rom._trapcause_select),
             self.clear_pend_mti.eq(
                 self.rom.clear_pend_mti | self.trap_rom.clear_pend_mti),
             self.clear_pend_mei.eq(
@@ -491,6 +489,31 @@ class SequencerCard(Elaboratable):
                                 OpcodeSelect.EBREAK)
                 with m.Else():
                     m.d.comb += self.opcode_select.eq(OpcodeSelect.CSRS)
+
+    def encode_trapcause(self, m: Module):
+        with m.Switch(self._trapcause_select):
+            with m.Case(TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN):
+                m.d.comb += self._trapcause.eq(
+                    TrapCause.EXC_INSTR_ADDR_MISALIGN)
+            with m.Case(TrapCauseSelect.EXC_ILLEGAL_INSTR):
+                m.d.comb += self._trapcause.eq(TrapCause.EXC_ILLEGAL_INSTR)
+            with m.Case(TrapCauseSelect.EXC_BREAKPOINT):
+                m.d.comb += self._trapcause.eq(TrapCause.EXC_BREAKPOINT)
+            with m.Case(TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN):
+                m.d.comb += self._trapcause.eq(
+                    TrapCause.EXC_LOAD_ADDR_MISALIGN)
+            with m.Case(TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN):
+                m.d.comb += self._trapcause.eq(
+                    TrapCause.EXC_STORE_AMO_ADDR_MISALIGN)
+            with m.Case(TrapCauseSelect.EXC_ECALL_FROM_MACH_MODE):
+                m.d.comb += self._trapcause.eq(
+                    TrapCause.EXC_ECALL_FROM_MACH_MODE)
+            with m.Case(TrapCauseSelect.INT_MACH_EXTERNAL):
+                m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_EXTERNAL)
+            with m.Case(TrapCauseSelect.INT_MACH_TIMER):
+                m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_TIMER)
+            with m.Default():
+                m.d.comb += self._trapcause.eq(0)
 
     def updates(self, m: Module):
         read_pulse = ClockSignal("ph1") & ~ClockSignal("ph2")
