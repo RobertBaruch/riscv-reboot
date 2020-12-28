@@ -45,6 +45,22 @@ class Opcode(IntEnum):
 
 
 @unique
+class OpcodeSelect(IntEnum):
+    """Opcode selection for state machine lookup table."""
+    NONE = 0
+    LOAD = 1
+    STORE = 2
+    OP = 3
+    BRANCH = 4
+    SYSTEM = 5
+    LUI = 6
+    JALR = 7
+    AUIPC = 8
+    JAL = 9
+    OP_IMM = 10
+
+
+@unique
 class OpcodeFormat(IntEnum):
     """Opcode formats."""
     R = 0    # OP

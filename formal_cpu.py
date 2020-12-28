@@ -1280,13 +1280,7 @@ class FormalCPU(Elaboratable):
         # Collected data throughout an instruction
         data = FormalCPU.Collected(m, cpu)
 
-        # Machine cycle counting
-        mcycle = Signal(3, reset_less=True, reset=0)
-
-        # with m.If(~cpu.seq.state.trap & ~cpu.seq.fatal & ~cpu.seq.state._exception):
-        m.d.ph1 += mcycle.eq(mcycle+1)
-        with m.If(cpu.instr_complete):
-            m.d.ph1 += mcycle.eq(0)
+        mcycle = cpu.seq.state._instr_phase
 
         # Assume memory and fake CSR data is stable
         with m.If(phase_count > 1):
@@ -1606,6 +1600,29 @@ class FormalCPU(Elaboratable):
         sync_rst = ResetSignal("sync")
         m.d.comb += Assume(sync_clk == ~Past(sync_clk))
         m.d.comb += Assume(~sync_rst)
+
+        # Basic invariants
+
+        m.d.comb += Assert(phase_count <= 5)
+
+        pc_aligned = Signal()
+        m.d.comb += pc_aligned.eq(cpu.seq.state._pc[:2] == 0)
+
+        # If there's an MRET instruction and the MEPC register was loaded with something
+        # misaligned, then the PC gets that misaligned value. Otherwise, the PC should
+        # not be misaligned.
+        last_instr_mret = Signal()
+        mret_loaded_pc = Signal()
+        m.d.comb += last_instr_mret.eq(Past(cpu.seq.instr_complete)
+                                       & (Past(cpu.seq.state._instr) == MRET))
+        m.d.comb += mret_loaded_pc.eq(last_instr_mret &
+                                      (cpu.seq.state._pc == cpu.exc._mepc))
+        m.d.comb += Assert(pc_aligned | mret_loaded_pc)
+
+        with m.If((cpu.seq.state._instr_phase == 0) & (phase_count > 1)):
+            m.d.comb += Assert(Stable(cpu.seq.state._instr))
+        with m.If(cpu.seq.state._instr_phase > 0):
+            m.d.comb += Assert(Stable(cpu.seq.state._instr))
 
         return m, [sync_clk, cpu.memdata_rd, cpu.csr_rd_data, cpu.time_irq, cpu.ext_irq]
 

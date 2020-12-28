@@ -6,9 +6,13 @@ __pycache__/
 # RTLIL files
 *.il
 
-# BMC runs
+# Verification runs
 *-bmc
 *_bmc
+*-prove
+*_prove
+*-cover
+*_cover
 *.gtkw
 
 # VSCode nonsense

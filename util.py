@@ -13,6 +13,13 @@ if sys.version_info < (3, 8):
     sys.exit(1)
 
 
+def all_true(*args):
+    cond = 1
+    for arg in args:
+        cond &= arg.bool()
+    return cond
+
+
 def main(cls, filename="toplevel.il"):
     """Runs a file in simulate or generate mode.
 
