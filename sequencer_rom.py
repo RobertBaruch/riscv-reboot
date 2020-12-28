@@ -16,19 +16,12 @@ class SequencerROM(Elaboratable):
     """ROM for the sequencer card state machine."""
 
     def __init__(self):
-        # These signals are used by a separate ROM.
+        # Control line
+        self.enable_sequencer_rom = Signal()
+
+        # Inputs: 10 + 11 decoder
+
         self.is_interrupted = Signal()
-        self.exception = Signal()
-        self.fatal = Signal()
-        self.instr_misalign = Signal()
-        self.bad_instr = Signal()
-        self.trap = Signal()
-        self.mei_pend = Signal()
-        self.mti_pend = Signal()
-        self.vec_mode = Signal(2)
-
-        # Inputs: 9 + 11 decoder
-
         self.memaddr_2_lsb = Signal(2)
         self.branch_cond = Signal()
         self._instr_phase = Signal(2)
@@ -156,6 +149,7 @@ class SequencerROM(Elaboratable):
         # Defaults
         m.d.comb += [
             self._next_instr_phase.eq(0),
+            self._trapcause.eq(0),
             self.reg_to_x.eq(0),
             self._pc_to_x.eq(0),
             self._memdata_to_x.eq(0),
@@ -216,28 +210,7 @@ class SequencerROM(Elaboratable):
             self.next_fatal.eq(0),
         ]
 
-        # 4 cases here:
-        #
-        # 1. It's a trap!
-        # 2. It's not a trap, but PC is misaligned.
-        # 3. It's not a trap, PC is aligned, but it's a bad instruction.
-        # 4. None of the above.
-        #
-        # Maybe we can handle the first three with a separate ROM.
-
-        with m.If(self.trap):
-            self.handle_trap(m)
-
-        # True when pc[0:2] != 0 and ~trap.
-        with m.Elif(self.instr_misalign):
-            self.set_exception(
-                m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._pc_to_z)
-
-        with m.Elif(self.bad_instr):
-            self.set_exception(
-                m, TrapCause.EXC_ILLEGAL_INSTR, mtval=self._instr_to_z)
-
-        with m.Else():
+        with m.If(self.enable_sequencer_rom):
 
             # 3 independent cases:
             #
@@ -349,54 +322,6 @@ class SequencerROM(Elaboratable):
     def handle_illegal_instr(self, m: Module):
         self.set_exception(m, TrapCause.EXC_ILLEGAL_INSTR,
                            mtval=self._instr_to_z)
-
-    def handle_trap(self, m: Module):
-        """Adds trap handling logic.
-
-        For fatals, we store the cause and then halt.
-        """
-        is_int = ~self.exception
-
-        with m.If(self._instr_phase == 0):
-            with m.If(self.fatal):
-                m.d.comb += self._next_instr_phase.eq(0)  # hang.
-            with m.Else():
-                m.d.comb += self._next_instr_phase.eq(1)
-
-            # If set_exception was called, we've already saved the trap CSRs.
-            with m.If(is_int):
-                with m.If(self.mei_pend):
-                    m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_EXTERNAL)
-                    m.d.comb += self._trapcause_to_x.eq(1)
-                    m.d.comb += self.clear_pend_mei.eq(1)
-                with m.Elif(self.mti_pend):
-                    m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_TIMER)
-                    m.d.comb += self._trapcause_to_x.eq(1)
-                    m.d.comb += self.clear_pend_mti.eq(1)
-
-                m.d.comb += self._pc_to_y.eq(1)
-
-                # MTVAL should be zero for non-exceptions, but right now it's just random.
-                # X -> MCAUSE, Y -> MEPC, Z -> MTVAL
-                m.d.comb += self.save_trap_csrs.eq(1)
-
-        with m.Else():
-            m.d.comb += self._mtvec_30_to_y.eq(1)  # mtvec >> 2
-            with m.If(all_true(is_int, self.vec_mode == 1)):
-                m.d.comb += [
-                    self._mcause_to_csr_num.eq(1),
-                    self.csr_to_x.eq(1),
-                ]
-
-            m.d.comb += self.load_trap.eq(1)
-            m.d.comb += self.next_trap.eq(0)
-            m.d.comb += [
-                self.alu_op_to_z.eq(AluOp.ADD),
-                self._z_30_to_memaddr.eq(1),  # z << 2 -> memaddr, pc
-                self._z_30_to_pc.eq(1),
-                self.enter_trap.eq(1),
-                self.set_instr_complete.eq(1),
-            ]
 
     def handle_lui(self, m: Module):
         """Adds the LUI logic to the given module.

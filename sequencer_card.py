@@ -18,6 +18,7 @@ from IC_7416244 import IC_mux32
 from IC_7416374 import IC_reg32_with_mux
 from IC_GAL import IC_GAL_imm_format_decoder
 from sequencer_rom import SequencerROM
+from trap_rom import TrapROM
 
 
 class SequencerState:
@@ -82,6 +83,7 @@ class SequencerCard(Elaboratable):
 
         self.state = SequencerState(ext_init)
         self.rom = SequencerROM()
+        self.trap_rom = TrapROM()
 
         # A clock-based signal, high only at the end of a machine
         # cycle (i.e. phase 5, the very end of the write phase).
@@ -237,13 +239,16 @@ class SequencerCard(Elaboratable):
         self.next_exception = Signal()
         self.next_fatal = Signal()
 
+        self.enable_sequencer_rom = Signal()
+
     def elaborate(self, _: Platform) -> Module:
         """Implements the logic of the sequencer card."""
         m = Module()
 
         # Instruction latch
         m.submodules += self._instr_latch
-        m.submodules += self.rom
+        m.submodules.rom = self.rom
+        m.submodules.trap_rom = self.trap_rom
 
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
         m.d.comb += self.vec_mode.eq(self.state._mtvec[:2])
@@ -277,20 +282,28 @@ class SequencerCard(Elaboratable):
         return m
 
     def connect_rom(self, m: Module):
+        m.d.comb += self.enable_sequencer_rom.eq(
+            self.trap_rom.enable_sequencer_rom)
+        m.d.comb += self.rom.enable_sequencer_rom.eq(self.enable_sequencer_rom)
+
         # Inputs
         m.d.comb += [
+            self.trap_rom.is_interrupted.eq(self.is_interrupted),
+            self.trap_rom.exception.eq(self.state.exception),
+            self.trap_rom.fatal.eq(self.state.fatal),
+            self.trap_rom.instr_misalign.eq(self.instr_misalign),
+            self.trap_rom.bad_instr.eq(self.bad_instr),
+            self.trap_rom.trap.eq(self.state.trap),
+            self.trap_rom.mei_pend.eq(self.mei_pend),
+            self.trap_rom.mti_pend.eq(self.mti_pend),
+            self.trap_rom.vec_mode.eq(self.vec_mode),
+            self.trap_rom._instr_phase.eq(self.state._instr_phase),
+
             self.rom.is_interrupted.eq(self.is_interrupted),
-            self.rom.exception.eq(self.state.exception),
-            self.rom.fatal.eq(self.state.fatal),
-            self.rom.mei_pend.eq(self.mei_pend),
-            self.rom.mti_pend.eq(self.mti_pend),
-            self.rom.vec_mode.eq(self.vec_mode),
+            self.rom._instr_phase.eq(self.state._instr_phase),
+
             self.rom.memaddr_2_lsb.eq(self.memaddr_2_lsb),
             self.rom.branch_cond.eq(self.branch_cond),
-            self.rom.instr_misalign.eq(self.instr_misalign),
-            self.rom.bad_instr.eq(self.bad_instr),
-            self.rom.trap.eq(self.state.trap),
-            self.rom._instr_phase.eq(self.state._instr_phase),
             self.rom.data_z_in_2_lsb0.eq(self.data_z_in_2_lsb0),
 
             # Instruction decoding
@@ -306,18 +319,20 @@ class SequencerCard(Elaboratable):
         # Outputs
         m.d.comb += [
             # Raised on the last phase of an instruction.
-            self.set_instr_complete.eq(self.rom.set_instr_complete),
+            self.set_instr_complete.eq(
+                self.rom.set_instr_complete | self.trap_rom.set_instr_complete),
 
             self.x_reg.eq(self.rom.x_reg),
             self.y_reg.eq(self.rom.y_reg),
             self.z_reg.eq(self.rom.z_reg),
 
             # Raised when the exception card should store trap data.
-            self.save_trap_csrs.eq(self.rom.save_trap_csrs),
+            self.save_trap_csrs.eq(
+                self.rom.save_trap_csrs | self.trap_rom.save_trap_csrs),
 
             # CSR lines
-            self.csr_num.eq(self.rom.csr_num),
-            self.csr_to_x.eq(self.rom.csr_to_x),
+            self.csr_num.eq(self.rom.csr_num | self.trap_rom.csr_num),
+            self.csr_to_x.eq(self.rom.csr_to_x | self.trap_rom.csr_to_x),
             self.z_to_csr.eq(self.rom.z_to_csr),
 
             # Memory
@@ -332,7 +347,8 @@ class SequencerCard(Elaboratable):
             # (i.e. load_instr) on the latch is a register, so setting load_instr
             # now opens the transparent latch next.
             self._load_instr.eq(self.rom._load_instr),
-            self._next_instr_phase.eq(self.rom._next_instr_phase),
+            self._next_instr_phase.eq(
+                self.rom._next_instr_phase | self.trap_rom._next_instr_phase),
 
             self._imm_format.eq(self.rom._imm_format),
 
@@ -344,22 +360,27 @@ class SequencerCard(Elaboratable):
             self.reg_to_x.eq(self.rom.reg_to_x),
             self._pc_to_x.eq(self.rom._pc_to_x),
             self._memdata_to_x.eq(self.rom._memdata_to_x),
-            self._trapcause_to_x.eq(self.rom._trapcause_to_x),
+            self._trapcause_to_x.eq(
+                self.rom._trapcause_to_x | self.trap_rom._trapcause_to_x),
 
             # -> Y
             self.reg_to_y.eq(self.rom.reg_to_y),
             self._imm_to_y.eq(self.rom._imm_to_y),
             self._shamt_to_y.eq(self.rom._shamt_to_y),
-            self._pc_to_y.eq(self.rom._pc_to_y),
-            self._pc_plus_4_to_y.eq(self.rom._pc_plus_4_to_y),
-            self._mtvec_30_to_y.eq(self.rom._mtvec_30_to_y),
+            self._pc_to_y.eq(self.rom._pc_to_y | self.trap_rom._pc_to_y),
+            self._pc_plus_4_to_y.eq(
+                self.rom._pc_plus_4_to_y | self.trap_rom._pc_plus_4_to_y),
+            self._mtvec_30_to_y.eq(
+                self.rom._mtvec_30_to_y | self.trap_rom._mtvec_30_to_y),
 
             # -> Z
             self._pc_plus_4_to_z.eq(self.rom._pc_plus_4_to_z),
             self._tmp_to_z.eq(self.rom._tmp_to_z),
-            self.alu_op_to_z.eq(self.rom.alu_op_to_z),
-            self._pc_to_z.eq(self.rom._pc_to_z),
-            self._instr_to_z.eq(self.rom._instr_to_z),
+            self.alu_op_to_z.eq(self.rom.alu_op_to_z |
+                                self.trap_rom.alu_op_to_z),
+            self._pc_to_z.eq(self.rom._pc_to_z | self.trap_rom._pc_to_z),
+            self._instr_to_z.eq(self.rom._instr_to_z |
+                                self.trap_rom._instr_to_z),
             self._memaddr_to_z.eq(self.rom._memaddr_to_z),
             self._memaddr_lsb_masked_to_z.eq(
                 self.rom._memaddr_lsb_masked_to_z),
@@ -370,7 +391,8 @@ class SequencerCard(Elaboratable):
             self._x_to_pc.eq(self.rom._x_to_pc),
             self._memaddr_to_pc.eq(self.rom._memaddr_to_pc),
             self._memdata_to_pc.eq(self.rom._memdata_to_pc),
-            self._z_30_to_pc.eq(self.rom._z_30_to_pc),
+            self._z_30_to_pc.eq(self.rom._z_30_to_pc |
+                                self.trap_rom._z_30_to_pc),
 
             # -> tmp
             self._x_to_tmp.eq(self.rom._x_to_tmp),
@@ -379,14 +401,16 @@ class SequencerCard(Elaboratable):
             # -> csr_num
             self._funct12_to_csr_num.eq(self.rom._funct12_to_csr_num),
             self._mepc_num_to_csr_num.eq(self.rom._mepc_num_to_csr_num),
-            self._mcause_to_csr_num.eq(self.rom._mcause_to_csr_num),
+            self._mcause_to_csr_num.eq(
+                self.rom._mcause_to_csr_num | self.trap_rom._mcause_to_csr_num),
 
             # -> memaddr
             self._pc_plus_4_to_memaddr.eq(self.rom._pc_plus_4_to_memaddr),
             self._z_to_memaddr.eq(self.rom._z_to_memaddr),
             self._x_to_memaddr.eq(self.rom._x_to_memaddr),
             self._memdata_to_memaddr.eq(self.rom._memdata_to_memaddr),
-            self._z_30_to_memaddr.eq(self.rom._z_30_to_memaddr),
+            self._z_30_to_memaddr.eq(
+                self.rom._z_30_to_memaddr | self.trap_rom._z_30_to_memaddr),
 
             # -> memdata
             self._z_to_memdata.eq(self.rom._z_to_memdata),
@@ -395,19 +419,23 @@ class SequencerCard(Elaboratable):
             self._shamt.eq(self.rom._shamt),
 
             # -> various CSRs
-            self._trapcause.eq(self.rom._trapcause),
-            self.clear_pend_mti.eq(self.rom.clear_pend_mti),
-            self.clear_pend_mei.eq(self.rom.clear_pend_mei),
+            self._trapcause.eq(self.rom._trapcause | self.trap_rom._trapcause),
+            self.clear_pend_mti.eq(
+                self.rom.clear_pend_mti | self.trap_rom.clear_pend_mti),
+            self.clear_pend_mei.eq(
+                self.rom.clear_pend_mei | self.trap_rom.clear_pend_mei),
 
-            self.enter_trap.eq(self.rom.enter_trap),
-            self.exit_trap.eq(self.rom.exit_trap),
+            self.enter_trap.eq(self.rom.enter_trap | self.trap_rom.enter_trap),
+            self.exit_trap.eq(self.rom.exit_trap | self.trap_rom.exit_trap),
 
             # Signals for next registers
-            self.load_trap.eq(self.rom.load_trap),
-            self.next_trap.eq(self.rom.next_trap),
-            self.load_exception.eq(self.rom.load_exception),
-            self.next_exception.eq(self.rom.next_exception),
-            self.next_fatal.eq(self.rom.next_fatal),
+            self.load_trap.eq(self.rom.load_trap | self.trap_rom.load_trap),
+            self.next_trap.eq(self.rom.next_trap | self.trap_rom.next_trap),
+            self.load_exception.eq(
+                self.rom.load_exception | self.trap_rom.load_exception),
+            self.next_exception.eq(
+                self.rom.next_exception | self.trap_rom.next_exception),
+            self.next_fatal.eq(self.rom.next_fatal | self.trap_rom.next_fatal),
         ]
 
     def encode_opcode_select(self, m: Module):
