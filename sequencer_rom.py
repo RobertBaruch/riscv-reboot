@@ -6,7 +6,7 @@ from nmigen import Signal, Module, Elaboratable
 from nmigen.build import Platform
 
 from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
-from consts import Opcode, OpcodeFormat, SystemFunc, TrapCause, PrivFunc
+from consts import OpcodeFormat, SystemFunc, TrapCause
 from consts import InstrReg, OpcodeSelect
 from consts import NextPC
 from util import all_true
@@ -16,21 +16,23 @@ class SequencerROM(Elaboratable):
     """ROM for the sequencer card state machine."""
 
     def __init__(self):
-        # Inputs: 20 + 13 decoder
-
+        # These signals are used by a separate ROM.
         self.is_interrupted = Signal()
         self.exception = Signal()
         self.fatal = Signal()
-        self.mei_pend = Signal()
-        self.mti_pend = Signal()
-        self.vec_mode = Signal(2)
-        self.memaddr_2_lsb = Signal(2)
-        self.branch_cond = Signal()
         self.instr_misalign = Signal()
         self.bad_instr = Signal()
         self.trap = Signal()
+        self.mei_pend = Signal()
+        self.mti_pend = Signal()
+        self.vec_mode = Signal(2)
+
+        # Inputs: 9 + 11 decoder
+
+        self.memaddr_2_lsb = Signal(2)
+        self.branch_cond = Signal()
         self._instr_phase = Signal(2)
-        self.data_z_in_2_lsb = Signal(2)
+        self.data_z_in_2_lsb0 = Signal()
         self.imm0 = Signal()
         self.rd0 = Signal()
         self.rs1_0 = Signal()
@@ -39,9 +41,6 @@ class SequencerROM(Elaboratable):
         self.opcode_select = Signal(OpcodeSelect)  # 4 bits
         self._funct3 = Signal(3)
         self._alu_func = Signal(4)
-        self.do_mret = Signal()
-        self.do_ecall = Signal()
-        self.do_ebreak = Signal()
 
         ##############
         # Outputs
@@ -217,64 +216,93 @@ class SequencerROM(Elaboratable):
             self.next_fatal.eq(0),
         ]
 
-        with m.If(self.instr_misalign):
-            self.set_exception(
-                m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._pc_to_z)
+        # 4 cases here:
+        #
+        # 1. It's a trap!
+        # 2. It's not a trap, but PC is misaligned.
+        # 3. It's not a trap, PC is aligned, but it's a bad instruction.
+        # 4. None of the above.
+        #
+        # Maybe we can handle the first three with a separate ROM.
 
-        with m.Elif(self.is_interrupted):
-            m.d.comb += self._pc_to_z.eq(1)
-            m.d.comb += self._next_instr_phase.eq(0)
-            m.d.comb += self.load_trap.eq(1)
-            m.d.comb += self.next_trap.eq(1)
-
-        # Load the instruction on instruction phase 0
-        with m.Elif(all_true(self._instr_phase == 0, ~self.trap)):
-            m.d.comb += self._load_instr.eq(1)
-            m.d.comb += self.mem_rd.eq(1)
-
-        # Handle the trap.
         with m.If(self.trap):
             self.handle_trap(m)
 
-        with m.Elif(~self.instr_misalign):
-            with m.If(self.bad_instr):
-                self.handle_illegal_instr(m)
+        # True when pc[0:2] != 0 and ~trap.
+        with m.Elif(self.instr_misalign):
+            self.set_exception(
+                m, TrapCause.EXC_INSTR_ADDR_MISALIGN, mtval=self._pc_to_z)
 
-            with m.Else():
-                # Output control signals
-                with m.Switch(self.opcode_select):
-                    with m.Case(OpcodeSelect.LUI):
-                        self.handle_lui(m)
+        with m.Elif(self.bad_instr):
+            self.set_exception(
+                m, TrapCause.EXC_ILLEGAL_INSTR, mtval=self._instr_to_z)
 
-                    with m.Case(OpcodeSelect.AUIPC):
-                        self.handle_auipc(m)
+        with m.Else():
 
-                    with m.Case(OpcodeSelect.OP_IMM):
-                        self.handle_op_imm(m)
+            # 3 independent cases:
+            #
+            # 1. We were interrupted and the instruction is complete.
+            # 2. We're at the beginning of an instruction, and not interrupted.
+            # 3. Instruction handling
+            #
+            # Maybe we can handle the first two with just some OR gates
+            # on the output signals.
 
-                    with m.Case(OpcodeSelect.OP):
-                        self.handle_op(m)
+            # True when instr_complete and ~trap and (mei or mti pending).
+            with m.If(self.is_interrupted):
+                # m.d.comb += self._pc_to_z.eq(1)  # Does this do anything?
+                # m.d.comb += self._next_instr_phase.eq(0)
+                m.d.comb += self.load_trap.eq(1)
+                m.d.comb += self.next_trap.eq(1)
 
-                    with m.Case(OpcodeSelect.JAL):
-                        self.handle_jal(m)
+            # Load the instruction on instruction phase 0 unless we've been interrupted.
+            with m.If(all_true(self._instr_phase == 0, ~self.is_interrupted)):
+                m.d.comb += self._load_instr.eq(1)
+                m.d.comb += self.mem_rd.eq(1)
 
-                    with m.Case(OpcodeSelect.JALR):
-                        self.handle_jalr(m)
+            # Output control signals
+            with m.Switch(self.opcode_select):
+                with m.Case(OpcodeSelect.LUI):
+                    self.handle_lui(m)
 
-                    with m.Case(OpcodeSelect.BRANCH):
-                        self.handle_branch(m)
+                with m.Case(OpcodeSelect.AUIPC):
+                    self.handle_auipc(m)
 
-                    with m.Case(OpcodeSelect.LOAD):
-                        self.handle_load(m)
+                with m.Case(OpcodeSelect.OP_IMM):
+                    self.handle_op_imm(m)
 
-                    with m.Case(OpcodeSelect.STORE):
-                        self.handle_store(m)
+                with m.Case(OpcodeSelect.OP):
+                    self.handle_op(m)
 
-                    with m.Case(OpcodeSelect.SYSTEM):
-                        self.handle_system(m)
+                with m.Case(OpcodeSelect.JAL):
+                    self.handle_jal(m)
 
-                    with m.Default():
-                        self.handle_illegal_instr(m)
+                with m.Case(OpcodeSelect.JALR):
+                    self.handle_jalr(m)
+
+                with m.Case(OpcodeSelect.BRANCH):
+                    self.handle_branch(m)
+
+                with m.Case(OpcodeSelect.LOAD):
+                    self.handle_load(m)
+
+                with m.Case(OpcodeSelect.STORE):
+                    self.handle_store(m)
+
+                with m.Case(OpcodeSelect.CSRS):
+                    self.handle_csrs(m)
+
+                with m.Case(OpcodeSelect.MRET):
+                    self.handle_MRET(m)
+
+                with m.Case(OpcodeSelect.ECALL):
+                    self.handle_ECALL(m)
+
+                with m.Case(OpcodeSelect.EBREAK):
+                    self.handle_EBREAK(m)
+
+                with m.Default():
+                    self.handle_illegal_instr(m)
 
         return m
 
@@ -312,6 +340,7 @@ class SequencerROM(Elaboratable):
         else:
             m.d.comb += self._pc_plus_4_to_y.eq(1)
 
+        # X -> MCAUSE, Y -> MEPC, Z -> MTVAL
         m.d.comb += self.save_trap_csrs.eq(1)
         m.d.comb += self.load_trap.eq(1)
         m.d.comb += self.next_trap.eq(1)
@@ -329,6 +358,12 @@ class SequencerROM(Elaboratable):
         is_int = ~self.exception
 
         with m.If(self._instr_phase == 0):
+            with m.If(self.fatal):
+                m.d.comb += self._next_instr_phase.eq(0)  # hang.
+            with m.Else():
+                m.d.comb += self._next_instr_phase.eq(1)
+
+            # If set_exception was called, we've already saved the trap CSRs.
             with m.If(is_int):
                 with m.If(self.mei_pend):
                     m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_EXTERNAL)
@@ -341,13 +376,8 @@ class SequencerROM(Elaboratable):
 
                 m.d.comb += self._pc_to_y.eq(1)
 
-            with m.If(self.fatal):
-                m.d.comb += self._next_instr_phase.eq(0)
-            with m.Else():
-                m.d.comb += self._next_instr_phase.eq(1)
-
-            # If set_exception was called, we've already saved the trap CSRs.
-            with m.If(is_int):
+                # MTVAL should be zero for non-exceptions, but right now it's just random.
+                # X -> MCAUSE, Y -> MEPC, Z -> MTVAL
                 m.d.comb += self.save_trap_csrs.eq(1)
 
         with m.Else():
@@ -635,7 +665,7 @@ class SequencerROM(Elaboratable):
                     self.alu_op_to_z.eq(AluOp.ADD),
                 ]
 
-                with m.If(self.data_z_in_2_lsb == 0):
+                with m.If(self.data_z_in_2_lsb0):
                     self.next_instr(m, NextPC.Z)
 
                 with m.Else():
@@ -925,8 +955,8 @@ class SequencerROM(Elaboratable):
             m.d.comb += self.mem_wr.eq(1)
             self.next_instr(m)
 
-    def handle_system(self, m: Module):
-        """Adds the SYSTEM logic to the given module.
+    def handle_csrs(self, m: Module):
+        """Adds the SYSTEM (CSR opcodes) logic to the given module.
 
         Some points of interest:
 
@@ -961,8 +991,6 @@ class SequencerROM(Elaboratable):
                 self.handle_CSRRC(m)
             with m.Case(SystemFunc.CSRRCI):
                 self.handle_CSRRCI(m)
-            with m.Case(SystemFunc.PRIV):
-                self.handle_PRIV(m)
             with m.Default():
                 self.handle_illegal_instr(m)
 
@@ -1104,25 +1132,6 @@ class SequencerROM(Elaboratable):
                 self._z_reg_select.eq(InstrReg.RD),
             ]
             self.next_instr(m)
-
-    def handle_PRIV(self, m: Module):
-        with m.If(self.do_mret):
-            with m.If(self.rd0 & self.rs1_0):
-                self.handle_MRET(m)
-            with m.Else():
-                self.handle_illegal_instr(m)
-        with m.Elif(self.do_ecall):
-            with m.If(self.rd0 & self.rs1_0):
-                self.handle_ECALL(m)
-            with m.Else():
-                self.handle_illegal_instr(m)
-        with m.Elif(self.do_ebreak):
-            with m.If(self.rd0 & self.rs1_0):
-                self.handle_EBREAK(m)
-            with m.Else():
-                self.handle_illegal_instr(m)
-        with m.Else():
-            self.handle_illegal_instr(m)
 
     def handle_MRET(self, m: Module):
         m.d.comb += [

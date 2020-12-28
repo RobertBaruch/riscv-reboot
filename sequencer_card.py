@@ -11,7 +11,7 @@ from nmigen.asserts import Assert, Assume, Cover, Stable, Past
 from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
 from consts import Opcode, OpcodeFormat, SystemFunc, TrapCause, PrivFunc
 from consts import InstrReg, OpcodeSelect
-from consts import NextPC
+from consts import NextPC, Instr
 from transparent_latch import TransparentLatch
 from util import main, all_true
 from IC_7416244 import IC_mux32
@@ -121,7 +121,7 @@ class SequencerCard(Elaboratable):
         self.data_y_out = Signal(32)
         self.data_z_in = Signal(32)
         self.data_z_out = Signal(32)
-        self.data_z_in_2_lsb = Signal(2)
+        self.data_z_in_2_lsb0 = Signal()
 
         # Memory
         self.mem_rd = Signal(reset=1)
@@ -161,9 +161,6 @@ class SequencerCard(Elaboratable):
         self.imm0 = Signal()
         self.rd0 = Signal()
         self.rs1_0 = Signal()
-        self.do_mret = Signal()
-        self.do_ecall = Signal()
-        self.do_ebreak = Signal()
 
         self._x_reg_select = Signal(InstrReg)
         self._y_reg_select = Signal(InstrReg)
@@ -250,14 +247,11 @@ class SequencerCard(Elaboratable):
 
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
         m.d.comb += self.vec_mode.eq(self.state._mtvec[:2])
-        m.d.comb += self.data_z_in_2_lsb.eq(self.data_z_in[0:2])
+        m.d.comb += self.data_z_in_2_lsb0.eq(self.data_z_in[0:2] == 0)
         m.d.comb += self.memaddr_2_lsb.eq(self.state.memaddr[0:2])
         m.d.comb += self.imm0.eq(self._imm == 0)
         m.d.comb += self.rd0.eq(self._rd == 0)
         m.d.comb += self.rs1_0.eq(self._rs1 == 0)
-        m.d.comb += self.do_mret.eq(self._funct12 == PrivFunc.MRET)
-        m.d.comb += self.do_ecall.eq(self._funct12 == PrivFunc.ECALL)
-        m.d.comb += self.do_ebreak.eq(self._funct12 == PrivFunc.EBREAK)
 
         with m.If(self.set_instr_complete):
             m.d.comb += self.instr_complete.eq(self.mcycle_end)
@@ -297,15 +291,12 @@ class SequencerCard(Elaboratable):
             self.rom.bad_instr.eq(self.bad_instr),
             self.rom.trap.eq(self.state.trap),
             self.rom._instr_phase.eq(self.state._instr_phase),
-            self.rom.data_z_in_2_lsb.eq(self.data_z_in_2_lsb),
+            self.rom.data_z_in_2_lsb0.eq(self.data_z_in_2_lsb0),
 
             # Instruction decoding
             self.rom.opcode_select.eq(self.opcode_select),
             self.rom._funct3.eq(self._funct3),
             self.rom._alu_func.eq(self._alu_func),
-            self.rom.do_mret.eq(self.do_mret),
-            self.rom.do_ecall.eq(self.do_ecall),
-            self.rom.do_ebreak.eq(self.do_ebreak),
 
             self.rom.imm0.eq(self.imm0),
             self.rom.rd0.eq(self.rd0),
@@ -451,7 +442,19 @@ class SequencerCard(Elaboratable):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.STORE)
 
             with m.Case(Opcode.SYSTEM):
-                m.d.comb += self.opcode_select.eq(OpcodeSelect.SYSTEM)
+                with m.If(self._funct3 == SystemFunc.PRIV):
+                    with m.Switch(self.state._instr):
+                        with m.Case(Instr.MRET):
+                            m.d.comb += self.opcode_select.eq(
+                                OpcodeSelect.MRET)
+                        with m.Case(Instr.ECALL):
+                            m.d.comb += self.opcode_select.eq(
+                                OpcodeSelect.ECALL)
+                        with m.Case(Instr.EBREAK):
+                            m.d.comb += self.opcode_select.eq(
+                                OpcodeSelect.EBREAK)
+                with m.Else():
+                    m.d.comb += self.opcode_select.eq(OpcodeSelect.CSRS)
 
     def updates(self, m: Module):
         read_pulse = ClockSignal("ph1") & ~ClockSignal("ph2")

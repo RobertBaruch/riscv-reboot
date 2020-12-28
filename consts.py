@@ -5,6 +5,14 @@ from enum import IntEnum, unique
 
 
 @unique
+class Instr(IntEnum):
+    """Instructions where all 32 bits are fixed."""
+    MRET = 0x30200073
+    ECALL = 0x00000073
+    EBREAK = 0x00100073
+
+
+@unique
 class Opcode(IntEnum):
     """Opcodes."""
     LOAD = 0b000_0011      # 0x03
@@ -52,12 +60,15 @@ class OpcodeSelect(IntEnum):
     STORE = 2
     OP = 3
     BRANCH = 4
-    SYSTEM = 5
+    CSRS = 5
     LUI = 6
     JALR = 7
     AUIPC = 8
     JAL = 9
     OP_IMM = 10
+    MRET = 11
+    ECALL = 12
+    EBREAK = 13
 
 
 @unique
