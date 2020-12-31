@@ -53,8 +53,6 @@ class SequencerROM(Elaboratable):
         # Bytes in memory word to write
         self.mem_wr_mask = Signal(4)
 
-        # Internals
-
         self._next_instr_phase = Signal(2)
 
         self._imm_format = Signal(OpcodeFormat)  # 3 bits

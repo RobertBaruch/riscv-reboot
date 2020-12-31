@@ -308,6 +308,16 @@ class FormalCPU(Elaboratable):
             self.funct12 = Signal(12)
             self.csr_num = Signal(12)
             self.alu_func = Signal(AluFunc)
+            self.is_unknown_opcode = Signal()
+            self.is_zero_instr = Signal()
+            self.is_ones_instr = Signal()
+            self.is_misaligned_load = Signal()
+            self.is_misaligned_store = Signal()
+            self.is_instr_addr_misaligned = Signal()
+            self.is_illegal_instr = Signal()
+
+            self.load_store_addr = Signal(32)
+            self.branch_target = Signal(32)
 
             # Captured access data
             self.did_mem_rd = Signal()
@@ -338,6 +348,9 @@ class FormalCPU(Elaboratable):
                 self.csr_num.eq(self.funct12),
             ]
             self.imm = FormalCPU.decode_imm(m, self.instr)
+            m.d.comb += self.load_store_addr.eq(self.get_before_reg(m,
+                                                                    self.rs1) + self.imm)
+            m.d.comb += self.branch_target.eq(self.target_for_branch(m))
 
         def get_before_reg(self, m: Module, rnum: Signal) -> Signal:
             """Gets the given register from before the instruction executed."""
@@ -844,8 +857,8 @@ class FormalCPU(Elaboratable):
                     m.d.comb += Assert(self.csr_wr_data == self.mie)
                 with m.Case(CSRAddr.MIP):
                     # Pending machine interrupts are not writable.
-                    m.d.comb += Assert((self.csr_wr_data &
-                                        0xFFFFF777) == self.mip)
+                    m.d.comb += Assert(
+                        (self.csr_wr_data & 0xFFFFF777) == (self.mip & 0xFFFFF777))
                     m.d.comb += Assert(((self.mip_before ^
                                          self.mip) & 0x00000888) == 0)
 
@@ -1065,6 +1078,106 @@ class FormalCPU(Elaboratable):
                 with m.Default():
                     m.d.comb += Assert(0)
 
+        def check_unknown_opcode(self, m: Module):
+            with m.Switch(self.opcode):
+                with m.Case(Opcode.JAL, Opcode.JALR, Opcode.LUI, Opcode.AUIPC):
+                    m.d.comb += self.is_unknown_opcode.eq(0)
+
+                with m.Case(Opcode.LOAD):
+                    with m.Switch(self.funct3):
+                        with m.Case(MemAccessWidth.B, MemAccessWidth.BU,
+                                    MemAccessWidth.H, MemAccessWidth.HU,
+                                    MemAccessWidth.W):
+                            m.d.comb += self.is_unknown_opcode.eq(0)
+                        with m.Default():
+                            m.d.comb += self.is_unknown_opcode.eq(1)
+
+                with m.Case(Opcode.STORE):
+                    with m.Switch(self.funct3):
+                        with m.Case(MemAccessWidth.B, MemAccessWidth.H, MemAccessWidth.W):
+                            m.d.comb += self.is_unknown_opcode.eq(0)
+                        with m.Default():
+                            m.d.comb += self.is_unknown_opcode.eq(1)
+
+                with m.Case(Opcode.BRANCH):
+                    with m.Switch(self.funct3):
+                        with m.Case(BranchCond.EQ, BranchCond.NE, BranchCond.LT, BranchCond.GE,
+                                    BranchCond.LTU, BranchCond.GEU):
+                            m.d.comb += self.is_unknown_opcode.eq(0)
+                        with m.Default():
+                            m.d.comb += self.is_unknown_opcode.eq(1)
+
+                with m.Case(Opcode.OP_IMM, Opcode.OP):
+                    with m.Switch(self.alu_func):
+                        with m.Case(AluFunc.ADD, AluFunc.AND, AluFunc.SUB, AluFunc.SLL,
+                                    AluFunc.SLT, AluFunc.SLTU, AluFunc.XOR, AluFunc.SRL,
+                                    AluFunc.SRA, AluFunc.OR):
+                            m.d.comb += self.is_unknown_opcode.eq(0)
+                        with m.Default():
+                            m.d.comb += self.is_unknown_opcode.eq(1)
+
+                with m.Case(Opcode.SYSTEM):
+                    with m.Switch(self.funct3):
+                        with m.Case(SystemFunc.CSRRW, SystemFunc.CSRRWI, SystemFunc.CSRRS,
+                                    SystemFunc.CSRRSI, SystemFunc.CSRRC, SystemFunc.CSRRCI):
+                            m.d.comb += self.is_unknown_opcode.eq(0)
+                        with m.Default():
+                            with m.Switch(self.instr):
+                                with m.Case(MRET, ECALL, EBREAK):
+                                    m.d.comb += self.is_unknown_opcode.eq(0)
+                                with m.Default():
+                                    m.d.comb += self.is_unknown_opcode.eq(1)
+
+                with m.Default():
+                    m.d.comb += self.is_unknown_opcode.eq(1)
+
+        def check_invalid_instruction(self, m: Module):
+            m.d.comb += self.is_zero_instr.eq(self.instr[:16] == 0)
+            m.d.comb += self.is_ones_instr.eq(self.instr == 0xFFFFFFFF)
+
+        def check_misaligned_load(self, m: Module):
+            addr = self.load_store_addr
+
+            m.d.comb += self.is_misaligned_load.eq(0)
+            with m.If(self.opcode == Opcode.LOAD):
+                with m.Switch(self.funct3):
+                    with m.Case(MemAccessWidth.H, MemAccessWidth.HU):
+                        m.d.comb += self.is_misaligned_load.eq(addr[0] != 0)
+                    with m.Case(MemAccessWidth.W):
+                        m.d.comb += self.is_misaligned_load.eq(addr[0:2] != 0)
+
+        def check_misaligned_store(self, m: Module):
+            addr = self.load_store_addr
+
+            m.d.comb += self.is_misaligned_store.eq(0)
+            with m.If(self.opcode == Opcode.STORE):
+                with m.Switch(self.funct3):
+                    with m.Case(MemAccessWidth.H, MemAccessWidth.HU):
+                        m.d.comb += self.is_misaligned_store.eq(addr[0] != 0)
+                    with m.Case(MemAccessWidth.W):
+                        m.d.comb += self.is_misaligned_store.eq(addr[0:2] != 0)
+
+        def check_misaligned_branch(self, m: Module):
+            m.d.comb += self.is_instr_addr_misaligned.eq(0)
+            with m.If((self.opcode == Opcode.BRANCH) |
+                      (self.opcode == Opcode.JAL) |
+                      (self.opcode == Opcode.JALR)):
+                m.d.comb += self.is_instr_addr_misaligned.eq(
+                    self.branch_target[0:2] != 0)
+
+        def check_illegal_instr(self, m: Module):
+            m.d.comb += self.is_illegal_instr.eq(0)
+            with m.If((self.instr[:16] == 0) | (self.instr == 0xFFFFFFFF)):
+                m.d.comb += self.is_illegal_instr.eq(1)
+            with m.Else():
+                with m.Switch(self.opcode):
+                    with m.Case(Opcode.LOAD, Opcode.STORE, Opcode.OP, Opcode.OP_IMM,
+                                Opcode.LUI, Opcode.AUIPC, Opcode.JAL, Opcode.JALR,
+                                Opcode.BRANCH, Opcode.SYSTEM):
+                        m.d.comb += self.is_illegal_instr.eq(0)
+                    with m.Default():
+                        m.d.comb += self.is_illegal_instr.eq(1)
+
         def verify_fatal(self, m: Module):
             """Verification for fatal exceptions.
 
@@ -1077,137 +1190,63 @@ class FormalCPU(Elaboratable):
             * An unknown instruction was requested
             """
             cpu = self.cpu
-            is_zero_instr = Signal()
-            is_ones_instr = Signal()
-            is_misaligned_load = Signal()
-            is_misaligned_store = Signal()
-            is_instr_addr_misaligned = Signal()
-            is_unknown_opcode = Signal()
-            addr = self.memaddr_accessed
 
-            # m.d.comb += Assert(self.cpu.fatal)
+            is_fatal = (self.is_zero_instr | self.is_ones_instr |
+                        self.is_misaligned_load | self.is_misaligned_store |
+                        self.is_instr_addr_misaligned | self.is_unknown_opcode |
+                        self.is_illegal_instr)
 
-            m.d.comb += is_zero_instr.eq(self.instr[:16] == 0)
-            m.d.comb += is_ones_instr.eq(self.instr == 0xFFFFFFFF)
+            # This signal goes high on the last machine cycle of phase 0 for
+            # an fatal-causing instruction.
+            mcycle_end_with_fatal = Signal()
+            m.d.comb += mcycle_end_with_fatal.eq(is_fatal & cpu.seq.mcycle_end)
 
-            m.d.comb += is_misaligned_load.eq(0)
-            with m.If(self.did_mem_rd & (self.opcode == Opcode.LOAD)):
-                with m.Switch(self.funct3):
-                    with m.Case(MemAccessWidth.H, MemAccessWidth.HU):
-                        m.d.comb += is_misaligned_load.eq(addr[0] != 0)
-                    with m.Case(MemAccessWidth.W):
-                        m.d.comb += is_misaligned_load.eq(addr[0:2] != 0)
-
-            m.d.comb += is_misaligned_store.eq(0)
-            # A store reports a misaligned address before it does a write.
-            store_addr = Signal(32)
-            m.d.comb += store_addr.eq(self.get_before_reg(m,
-                                                          self.rs1) + self.imm)
-            with m.If(self.opcode == Opcode.STORE):
-                with m.Switch(self.funct3):
-                    with m.Case(MemAccessWidth.H, MemAccessWidth.HU):
-                        m.d.comb += is_misaligned_store.eq(store_addr[0] != 0)
-                    with m.Case(MemAccessWidth.W):
-                        m.d.comb += is_misaligned_store.eq(
-                            store_addr[0:2] != 0)
-
-            branch_target = Signal(32)
-            m.d.comb += branch_target.eq(self.target_for_branch(m))
-            m.d.comb += is_instr_addr_misaligned.eq(branch_target[0:2] != 0)
-
-            with m.Switch(self.opcode):
-                with m.Case(Opcode.JAL, Opcode.JALR, Opcode.LUI, Opcode.AUIPC):
-                    m.d.comb += is_unknown_opcode.eq(0)
-
-                with m.Case(Opcode.LOAD):
-                    with m.Switch(self.funct3):
-                        with m.Case(MemAccessWidth.B, MemAccessWidth.BU,
-                                    MemAccessWidth.H, MemAccessWidth.HU,
-                                    MemAccessWidth.W):
-                            m.d.comb += is_unknown_opcode.eq(0)
-                        with m.Default():
-                            m.d.comb += is_unknown_opcode.eq(1)
-
-                with m.Case(Opcode.STORE):
-                    with m.Switch(self.funct3):
-                        with m.Case(MemAccessWidth.B, MemAccessWidth.H, MemAccessWidth.W):
-                            m.d.comb += is_unknown_opcode.eq(0)
-                        with m.Default():
-                            m.d.comb += is_unknown_opcode.eq(1)
-
-                with m.Case(Opcode.BRANCH):
-                    with m.Switch(self.funct3):
-                        with m.Case(BranchCond.EQ, BranchCond.NE, BranchCond.LT, BranchCond.GE,
-                                    BranchCond.LTU, BranchCond.GEU):
-                            m.d.comb += is_unknown_opcode.eq(0)
-                        with m.Default():
-                            m.d.comb += is_unknown_opcode.eq(1)
-
-                with m.Case(Opcode.OP_IMM, Opcode.OP):
-                    with m.Switch(self.alu_func):
-                        with m.Case(AluFunc.ADD, AluFunc.AND, AluFunc.SUB, AluFunc.SLL,
-                                    AluFunc.SLT, AluFunc.SLTU, AluFunc.XOR, AluFunc.SRL,
-                                    AluFunc.SRA, AluFunc.OR):
-                            m.d.comb += is_unknown_opcode.eq(0)
-                        with m.Default():
-                            m.d.comb += is_unknown_opcode.eq(1)
-
-                with m.Case(Opcode.SYSTEM):
-                    with m.Switch(self.funct3):
-                        with m.Case(SystemFunc.CSRRW, SystemFunc.CSRRWI, SystemFunc.CSRRS,
-                                    SystemFunc.CSRRSI, SystemFunc.CSRRC, SystemFunc.CSRRCI):
-                            m.d.comb += is_unknown_opcode.eq(0)
-                        with m.Default():
-                            with m.Switch(self.instr):
-                                with m.Case(MRET, ECALL, EBREAK):
-                                    m.d.comb += is_unknown_opcode.eq(0)
-                                with m.Default():
-                                    m.d.comb += is_unknown_opcode.eq(1)
-
-                with m.Default():
-                    m.d.comb += is_unknown_opcode.eq(1)
-
-            is_exception = (is_zero_instr | is_ones_instr |
-                            is_misaligned_load | is_misaligned_store |
-                            is_instr_addr_misaligned | is_unknown_opcode)
-
-            # Make sure that on the first clock cycle 2 machine cycles after
-            # the exception condition, we are in the trapped state.
-            mcycle_end_with_exception = Signal()
-            m.d.comb += mcycle_end_with_exception.eq(
-                is_exception & cpu.seq.mcycle_end)
-
-            with m.If(Past(mcycle_end_with_exception, clocks=13)):
+            # In all cases we know about the fatal on phase 0. Most instructions
+            # trap in phase 1. However, BRANCH traps in phase 2, and invalid
+            # instructions trap in phase 0
+            with m.If(Rose(mcycle_end_with_fatal, clocks=1) &
+                      ((self.opcode == Opcode.INSTR_48A) | (self.instr[:16] == 0) |
+                       (self.instr == 0xFFFFFFFF) | (self.opcode == Opcode.SYSTEM))):
                 m.d.comb += Assert(cpu.seq.state.trap)
+                m.d.comb += Assert(cpu.seq.state.fatal)
+            with m.If(Rose(mcycle_end_with_fatal, clocks=7) & (self.opcode != Opcode.BRANCH)):
+                m.d.comb += Assert(cpu.seq.state.trap)
+                m.d.comb += Assert(cpu.seq.state.fatal)
+            with m.Elif(Rose(mcycle_end_with_fatal, clocks=13) & (self.opcode == Opcode.BRANCH)):
+                m.d.comb += Assert(cpu.seq.state.trap)
+                m.d.comb += Assert(cpu.seq.state.fatal)
 
+            # Trap can also rise on IRQ and non-fatal exceptions.
+            with m.If(cpu.fatal & Rose(cpu.seq.state.trap, clocks=6)):
                 # Exceptions load mepc with the PC of the instruction that caused the problem.
                 m.d.comb += Assert(self.mepc == self.state_before._pc)
 
-                with m.If(is_instr_addr_misaligned):
+                with m.If(self.is_instr_addr_misaligned):
                     m.d.comb += Assert(self.mcause ==
                                        TrapCause.EXC_INSTR_ADDR_MISALIGN)
                     with m.Switch(self.opcode):
                         with m.Case(Opcode.JAL, Opcode.JALR, Opcode.BRANCH):
                             m.d.comb += Assert(self.mtval ==
-                                               branch_target)
+                                               self.branch_target)
                         with m.Default():
                             m.d.comb += Assert(self.mtval ==
                                                self.state_before._pc)
 
-                with m.Elif(is_zero_instr | is_ones_instr | is_unknown_opcode):
+                with m.Elif(self.is_zero_instr | self.is_ones_instr |
+                            self.is_unknown_opcode | self.is_illegal_instr):
                     m.d.comb += Assert(self.mcause ==
                                        TrapCause.EXC_ILLEGAL_INSTR)
                     m.d.comb += Assert(self.mtval == self.instr)
 
-                with m.Elif(is_misaligned_load):
+                with m.Elif(self.is_misaligned_load):
                     m.d.comb += Assert(self.mcause ==
                                        TrapCause.EXC_LOAD_ADDR_MISALIGN)
-                    m.d.comb += Assert(self.mtval == addr)
+                    m.d.comb += Assert(self.mtval == self.load_store_addr)
 
-                with m.Elif(is_misaligned_store):
+                with m.Elif(self.is_misaligned_store):
                     m.d.comb += Assert(self.mcause ==
                                        TrapCause.EXC_STORE_AMO_ADDR_MISALIGN)
-                    m.d.comb += Assert(self.mtval == store_addr)
+                    m.d.comb += Assert(self.mtval == self.load_store_addr)
 
         def verify_irq(self, m: Module):
             """Verification for interrupts after trap goes low."""
@@ -1231,7 +1270,7 @@ class FormalCPU(Elaboratable):
                 m.d.comb += Assert(self.state._pc ==
                                    (base + (self.mcause << 2))[:32])
 
-    @classmethod
+    @ classmethod
     def make_clock(cls, m: Module) -> Tuple[Signal, Signal]:
         """Creates the clock domains and signals."""
         ph1 = ClockDomain("ph1")
@@ -1266,7 +1305,7 @@ class FormalCPU(Elaboratable):
 
         return (phase_count, mcycle_end)
 
-    @classmethod
+    @ classmethod
     def formal(cls) -> Tuple[Module, List[Signal]]:
         """Formal verification for the CPU."""
         m = Module()
@@ -1291,9 +1330,15 @@ class FormalCPU(Elaboratable):
         state = cpu.seq.state
         exc = cpu.exc
         irq = cpu.irq
+        data.check_unknown_opcode(m)
+        data.check_invalid_instruction(m)
+        data.check_misaligned_load(m)
+        data.check_misaligned_store(m)
+        data.check_misaligned_branch(m)
+        data.check_illegal_instr(m)
 
         # Take a snapshot of the state just before latching the instruction.
-        with m.If((mcycle == 0) & (phase_count == 1) & ~cpu.fatal & ~cpu.seq.state.exception):
+        with m.If((mcycle == 0) & (phase_count == 1) & ~cpu.fatal):
             m.d.ph2 += bef._pc.eq(state._pc)
             m.d.ph2 += bef._instr_phase.eq(state._instr_phase)
             m.d.ph2 += bef._instr.eq(state._instr)
@@ -1365,14 +1410,12 @@ class FormalCPU(Elaboratable):
             ]
 
         # Covers
-        m.d.comb += Cover(cpu.instr_complete)
-        m.d.comb += Cover(cpu.seq.state.trap)
-        # m.d.comb += Cover(Past(cpu.seq.trap, clocks=12))
-        # m.d.comb += Cover(Past(cpu.seq.fatal, clocks=12))
-        m.d.comb += Cover(Past(cpu.time_irq, 18) &
-                          Past(cpu.seq.instr_complete, 18) &
-                          ~Past(cpu.seq.state.exception, 18))
-        m.d.comb += Cover(Past(cpu.seq.state._instr, 18) == ECALL)
+        m.d.comb += Cover(Past(cpu.fatal, clocks=12)
+                          & (data.opcode == Opcode.LOAD))
+        # m.d.comb += Cover(Past(cpu.time_irq, 18) &
+        #                   Past(cpu.seq.instr_complete, 18) &
+        #                   ~Past(cpu.seq.state.exception, 18))
+        # m.d.comb += Cover(Past(cpu.seq.state._instr, 18) == ECALL)
 
         # Asserts and Assumptions based on which instructions we're verifying.
         cycles = {
@@ -1437,6 +1480,10 @@ class FormalCPU(Elaboratable):
             m.d.comb += Assume(~cpu.seq.state.exception)
             m.d.comb += Assume(~cpu.time_irq)
             m.d.comb += Assume(~cpu.ext_irq)
+            m.d.comb += Assume(~cpu.seq.mei_pend)
+            m.d.comb += Assume(~cpu.seq.mti_pend)
+            m.d.comb += Assume(~cpu.irq._mip[MInterrupt.MTI])
+            m.d.comb += Assume(~cpu.irq._mip[MInterrupt.MEI])
             with m.If((mcycle == 0) & (phase_count == 2)):
                 m.d.comb += Assume(data.opcode == opcodes[mode])
                 m.d.comb += Assume((data.instr != ECALL) &
@@ -1464,6 +1511,8 @@ class FormalCPU(Elaboratable):
         if mode == "ecall":
             m.d.comb += Assume(~cpu.time_irq)
             m.d.comb += Assume(~cpu.ext_irq)
+            m.d.comb += Assume(~cpu.seq.mei_pend)
+            m.d.comb += Assume(~cpu.seq.mti_pend)
             m.d.comb += Assume(~cpu.irq._mip[MInterrupt.MTI])
             m.d.comb += Assume(~cpu.irq._mip[MInterrupt.MEI])
             with m.If((mcycle == 0) & (phase_count == 2)):
@@ -1473,29 +1522,51 @@ class FormalCPU(Elaboratable):
                 m.d.comb += Assert(cpu.seq.state._pc == cpu.memaddr)
                 data.verify_instr(m)
 
-        if mode == "fatal" or mode == "fatal1" or mode == "fatal2" or mode == "fatal3" or mode == "fatal4":
+        if mode.startswith("fatal"):
             # This will only verify fatal conditions.
             m.d.comb += Assume(~cpu.time_irq)
             m.d.comb += Assume(~cpu.ext_irq)
+            m.d.comb += Assume(~cpu.seq.mei_pend)
+            m.d.comb += Assume(~cpu.seq.mti_pend)
             m.d.comb += Assume(~cpu.irq._mip[MInterrupt.MTI])
             m.d.comb += Assume(~cpu.irq._mip[MInterrupt.MEI])
-            with m.If((mcycle == 0) & (phase_count == 2)):
-                if mode == "fatal1":
+
+            if mode == "fatal1":
+                with m.If((mcycle == 0) & (phase_count == 2)):
                     m.d.comb += Assume(data.opcode == Opcode.LOAD)
-                elif mode == "fatal2":
+                with m.If((mcycle > 0) | (phase_count == 2)):
+                    m.d.comb += Assume(data.opcode == Opcode.LOAD)
+                with m.If((mcycle == 0) & (Past(mcycle) == 1)):
+                    m.d.comb += Assume(Rose(cpu.trap))
+                with m.If(cpu.trap):
+                    m.d.comb += Assume(data.is_unknown_opcode)
+
+            elif mode == "fatal2":
+                with m.If((mcycle == 0) & (phase_count == 2)):
                     m.d.comb += Assume((data.opcode == Opcode.JAL)
                                        | (data.opcode == Opcode.JALR))
-                elif mode == "fatal3":
+
+            elif mode == "fatal3":
+                with m.If((mcycle == 0) & (phase_count == 2)):
                     m.d.comb += Assume((data.opcode == Opcode.OP) |
                                        (data.opcode == Opcode.OP_IMM) |
                                        (data.opcode == Opcode.STORE))
-                elif mode == "fatal4":
-                    m.d.comb += Assume((data.opcode != Opcode.OP) &
-                                       (data.opcode != Opcode.OP_IMM) &
-                                       (data.opcode != Opcode.LOAD) &
-                                       (data.opcode != Opcode.STORE) &
-                                       (data.opcode != Opcode.JAL) &
-                                       (data.opcode != Opcode.JALR))
+
+            elif mode == "fatal4":
+                m.d.comb += Assume(mcycle == 0)
+                with m.If((mcycle == 0) & (phase_count == 2)):
+                    m.d.comb += Assume((data.opcode == Opcode.INSTR_48A) |
+                                       (data.instr[:16] == 0) |
+                                       (data.instr == 0xFFFFFFFF) |
+                                       (data.opcode == Opcode.SYSTEM))
+                with m.If((mcycle == 0) & Past(cpu.mcycle_end)):
+                    m.d.comb += Assume(Rose(cpu.trap))
+                    m.d.comb += Assume(cpu.fatal)
+                with m.If(cpu.trap):
+                    m.d.comb += Assume(data.is_illegal_instr |
+                                       data.is_unknown_opcode)
+
+            with m.If((mcycle == 0) & (phase_count == 2)):
                 # These REALLY speed up the process.
                 with m.Switch(data.opcode):
                     with m.Case(Opcode.OP, Opcode.BRANCH, Opcode.STORE):
@@ -1530,38 +1601,37 @@ class FormalCPU(Elaboratable):
 
         if mode == "irq":
             m.d.comb += Assume(~cpu.fatal)
-            m.d.comb += Assume(~cpu.seq.state.exception)
+            m.d.comb += Assume(~cpu.exception)
+            mti_ok = Signal()
+            mei_ok = Signal()
+            m.d.comb += mti_ok.eq(data.mstatus[MStatus.MIE]
+                                  & data.mie[MInterrupt.MTI])
+            m.d.comb += mei_ok.eq(data.mstatus[MStatus.MIE]
+                                  & data.mie[MInterrupt.MEI])
 
-            with m.If((phase_count == 4) & ~cpu.seq.state.trap & data.mstatus[MStatus.MIE]):
-                m.d.comb += Assume(cpu.time_irq | cpu.ext_irq)
-                with m.If(data.mie[MInterrupt.MTI]):
-                    m.d.ph2 += data.did_time_irq.eq(data.did_time_irq |
-                                                    cpu.time_irq)
-                with m.If(data.mie[MInterrupt.MEI]):
-                    m.d.ph2 += data.did_ext_irq.eq(data.did_ext_irq |
-                                                   cpu.ext_irq)
-            with m.Else():
+            with m.If((phase_count == 4) & ~cpu.trap):
+                m.d.comb += Assume((mti_ok & (cpu.time_irq | cpu.irq.mti_pend)) |
+                                   ((mei_ok & (cpu.ext_irq | cpu.irq.mei_pend))))
+                m.d.ph2 += data.did_time_irq.eq(data.did_time_irq |
+                                                (mti_ok & (cpu.time_irq | cpu.irq.mti_pend)))
+                m.d.ph2 += data.did_ext_irq.eq(data.did_ext_irq |
+                                               (mei_ok & (cpu.ext_irq | cpu.irq.mei_pend)))
+            with m.If(phase_count != 4):
                 m.d.comb += Assume(~cpu.time_irq & ~cpu.ext_irq)
 
-            # Whoops, interrupts we issued were cancelled.
-            with m.If(~cpu.seq.state.trap):
-                with m.If(~data.mstatus[MStatus.MIE]):
-                    m.d.ph2 += data.did_time_irq.eq(0)
-                    m.d.ph2 += data.did_ext_irq.eq(0)
-                with m.If(~data.mie[MInterrupt.MTI]):
-                    m.d.ph2 += data.did_time_irq.eq(0)
-                with m.If(~data.mie[MInterrupt.MEI]):
-                    m.d.ph2 += data.did_ext_irq.eq(0)
+            # Make sure that even under induction, we only get interrupts once.
+            with m.If(~cpu.trap & (phase_count == 4)):
+                m.d.comb += Assume(~data.did_time_irq & ~data.did_ext_irq)
 
             with m.If(Past(cpu.instr_complete, clocks=2) &
-                      ~Past(cpu.seq.state.trap, 2)):
+                      ~Past(cpu.trap, 2)):
                 m.d.ph2 += data.int_return_pc.eq(data.state._pc)
 
-            with m.If(Past(cpu.instr_complete) & ~Past(cpu.seq.state.trap)):
+            with m.If(Past(cpu.instr_complete) & ~Past(cpu.trap)):
                 with m.If(data.did_time_irq | data.did_ext_irq):
                     m.d.comb += Assert(data.state.trap)
 
-            with m.If(Fell(cpu.seq.state.trap)):
+            with m.If(Fell(cpu.trap)):
                 data.verify_irq(m)
 
         with m.If(Initial()):
@@ -1601,28 +1671,156 @@ class FormalCPU(Elaboratable):
         m.d.comb += Assume(sync_clk == ~Past(sync_clk))
         m.d.comb += Assume(~sync_rst)
 
-        # Basic invariants
+        #
+        # Here start all the assertions so that inductive proofs work.
+        #
 
         m.d.comb += Assert(phase_count <= 5)
 
-        pc_aligned = Signal()
-        m.d.comb += pc_aligned.eq(cpu.seq.state._pc[:2] == 0)
+        for i in range(1, 32):
+            m.d.comb += Assert(cpu.regs._x_bank._mem[i]
+                               == cpu.regs._y_bank._mem[i])
 
-        # If there's an MRET instruction and the MEPC register was loaded with something
-        # misaligned, then the PC gets that misaligned value. Otherwise, the PC should
-        # not be misaligned.
-        last_instr_mret = Signal()
-        mret_loaded_pc = Signal()
-        m.d.comb += last_instr_mret.eq(Past(cpu.seq.instr_complete)
-                                       & (Past(cpu.seq.state._instr) == MRET))
-        m.d.comb += mret_loaded_pc.eq(last_instr_mret &
-                                      (cpu.seq.state._pc == cpu.exc._mepc))
-        m.d.comb += Assert(pc_aligned | mret_loaded_pc)
+        # Assert that various data collection things got cleared and loaded. For the most
+        # part this is identical to the part above where things get cleared and
+        # loaded on ph2, except they are turned into asserts on the correct phase
+        # for inductive proofs.
+        # with m.If((mcycle == 0) & (phase_count == 2) & ~Past(cpu.fatal)):
+        with m.If((mcycle == 0) & (phase_count == 2) & ~Past(cpu.trap)):
+            m.d.comb += Assert(~data.did_mem_rd & ~data.did_mem_wr)
+            for i in range(1, 32):
+                m.d.comb += Assert(data.regs_before[i]
+                                   == Past(cpu.regs._x_bank._mem[i]))
+                m.d.comb += Assert(data.regs_before[i]
+                                   == Past(cpu.regs._y_bank._mem[i]))
+            m.d.comb += Assert(data.regs_before[0] == 0)
+            m.d.comb += Assert(bef._pc == Past(state._pc))
+            m.d.comb += Assert(bef._instr_phase == Past(state._instr_phase))
+            m.d.comb += Assert(bef._instr == Past(state._instr))
+            m.d.comb += Assert(bef._stored_alu_eq ==
+                               Past(state._stored_alu_eq))
+            m.d.comb += Assert(bef._stored_alu_lt ==
+                               Past(state._stored_alu_lt))
+            m.d.comb += Assert(bef._stored_alu_ltu ==
+                               Past(state._stored_alu_ltu))
+            m.d.comb += Assert(bef.memaddr == Past(state.memaddr))
+            m.d.comb += Assert(bef.memdata_wr == Past(state.memdata_wr))
+            m.d.comb += Assert(bef._tmp == Past(state._tmp))
+            m.d.comb += Assert(bef.reg_page == Past(state.reg_page))
+            m.d.comb += Assert(bef.trap == Past(state.trap))
+            m.d.comb += Assert(bef.exception == Past(state.exception))
+            m.d.comb += Assert(bef._mtvec == Past(state._mtvec))
+            m.d.comb += Assert(data.mcause_before == Past(exc._mcause))
+            m.d.comb += Assert(data.mepc_before == Past(exc._mepc))
+            m.d.comb += Assert(data.mtval_before == Past(exc._mtval))
+            m.d.comb += Assert(data.mstatus_before == Past(irq._mstatus))
+            m.d.comb += Assert(data.mie_before == Past(irq._mie))
+            m.d.comb += Assert(data.mip_before == Past(irq._mip))
 
-        with m.If((cpu.seq.state._instr_phase == 0) & (phase_count > 1)):
+        # If we're in the instruction, or in a fatal condition, nothing
+        # collected should change.
+        with m.If((mcycle > 0) | (phase_count > 2) | Past(cpu.fatal)):
+            m.d.comb += Assert(bef._instr == state._instr)
+            m.d.comb += Assert(bef._pc == state._pc)
+            for i in range(0, 32):
+                m.d.comb += Assert(Stable(data.regs_before[i]))
+            m.d.comb += Assert(Stable(bef._instr))
+            m.d.comb += Assert(Stable(bef._pc))
+            m.d.comb += Assert(Stable(bef._stored_alu_eq))
+            m.d.comb += Assert(Stable(bef._stored_alu_lt))
+            m.d.comb += Assert(Stable(bef._stored_alu_ltu))
+            m.d.comb += Assert(Stable(bef.memaddr))
+            m.d.comb += Assert(Stable(bef.memdata_wr))
+            m.d.comb += Assert(Stable(bef._tmp))
+            m.d.comb += Assert(Stable(bef.reg_page))
+            m.d.comb += Assert(Stable(bef.trap))
+            m.d.comb += Assert(Stable(bef.exception))
+            m.d.comb += Assert(Stable(bef._mtvec))
+            m.d.comb += Assert(Stable(data.mcause_before))
+            m.d.comb += Assert(Stable(data.mepc_before))
+            m.d.comb += Assert(Stable(data.mtval_before))
+            m.d.comb += Assert(Stable(data.mstatus_before))
+            m.d.comb += Assert(Stable(data.mie_before))
+            m.d.comb += Assert(Stable(data.mip_before))
+
+        # But also, if we're in a fatal condition, the PC and instruction
+        # shouldn't change.
+        with m.If(Past(cpu.fatal)):
+            m.d.comb += Assert(Past(cpu.exception))
+            m.d.comb += Assert(bef._pc == Past(state._pc))
+            m.d.comb += Assert(bef._instr == Past(state._instr))
+
+        with m.If((mcycle == 0) & (phase_count == 2) & ~Past(cpu.trap)):
+            m.d.comb += Assert(data.did_csr_wr == Past(cpu.z_to_csr))
+            m.d.comb += Assert(data.did_csr_rd == Past(cpu.csr_to_x))
+
+        with m.If((mcycle == 0) &
+                  (Past(cpu.z_to_csr) | Past(cpu.csr_to_x)) &
+                  (phase_count == 2) &
+                  ~Past(cpu.trap)):
+            m.d.comb += [
+                Assert(data.did_csr_rd == Past(cpu.csr_to_x)),
+                Assert(data.did_csr_wr == Past(cpu.z_to_csr)),
+                Assert(data.csr_accessed == Past(cpu.csr_num)),
+                Assert(data.csr_rd_data == Past(cpu.x_bus)),
+                Assert(data.csr_wr_data == Past(cpu.z_bus)),
+            ]
+
+        with m.If((mcycle > 0) & Past(cpu.mem_rd) & (phase_count == 2) & ~Past(cpu.trap)):
+            m.d.comb += Assert(~Past(data.did_mem_rd) & ~Past(data.did_mem_wr))
+            m.d.comb += Assert(data.did_mem_rd == 1)
+            m.d.comb += Assert(data.memaddr_accessed == Past(cpu.memaddr))
+            m.d.comb += Assert(data.mem_rd_data == Past(cpu.memdata_rd))
+
+        with m.Elif((mcycle > 0) & Past(cpu.mem_wr) & (phase_count == 2) & ~Past(cpu.trap)):
+            m.d.comb += Assert(~Past(data.did_mem_rd) & ~Past(data.did_mem_wr))
+            m.d.comb += Assert(data.did_mem_wr == 1)
+            m.d.comb += Assert(data.memaddr_accessed == Past(cpu.memaddr))
+            m.d.comb += Assert(data.mem_wr_data == Past(cpu.memdata_wr))
+            m.d.comb += Assert(data.mem_wr_mask == Past(cpu.mem_wr_mask))
+
+        with m.If((mcycle == 0) & (phase_count > 1)):
             m.d.comb += Assert(Stable(cpu.seq.state._instr))
-        with m.If(cpu.seq.state._instr_phase > 0):
+        with m.If(mcycle > 0):
             m.d.comb += Assert(Stable(cpu.seq.state._instr))
+
+        with m.If(cpu.trap):
+            with m.If(cpu.fatal):
+                m.d.comb += Assert(mcycle == 0)
+            with m.Else():
+                m.d.comb += Assert(mcycle <= 1)
+
+        m.d.comb += Assert(~(cpu.fatal & cpu.instr_complete))
+
+        with m.If(((mcycle > 0) | (phase_count > 2)) & ~Past(cpu.trap)):
+            # Misaligned loads and stores can be detected during phase 0 because they
+            # only depend on rs1 and the immediate value. They will never appear on
+            # phase 2 because the instruction will have trapped in phase 1.
+            with m.If(state._instr == Opcode.LOAD):
+                with m.If(data.is_misaligned_load):
+                    m.d.comb += Assert(mcycle <= 1)
+
+            with m.If(state._instr == Opcode.STORE):
+                with m.If(data.is_misaligned_store):
+                    m.d.comb += Assert(mcycle <= 1)
+
+            # Misaligned JAL and JALR are also detected immediately, but they trap in
+            # phase 1.
+            with m.If((state._instr == Opcode.JAL) | (state._instr == Opcode.JALR)):
+                with m.If(data.is_instr_addr_misaligned):
+                    m.d.comb += Assert(mcycle <= 1)
+
+            # Misaligned BRANCH is also detected immediately, but traps in phase 2.
+            with m.If(state._instr == Opcode.BRANCH):
+                with m.If(data.is_instr_addr_misaligned):
+                    m.d.comb += Assert(mcycle <= 2)
+
+        # If there's a pending interrupt, then that interrupt must have been enabled.
+        with m.If(phase_count == 5):
+            with m.If(Past(cpu.irq.mei_pend)):
+                m.d.comb += Assert(Past(cpu.irq._mie)[MInterrupt.MEI])
+            with m.If(Past(cpu.irq.mti_pend)):
+                m.d.comb += Assert(Past(cpu.irq._mie)[MInterrupt.MTI])
 
         return m, [sync_clk, cpu.memdata_rd, cpu.csr_rd_data, cpu.time_irq, cpu.ext_irq]
 

@@ -79,10 +79,8 @@ class IrqCard(Elaboratable):
                 m.d.comb += self._clear_pend_mti.eq(1)
                 m.d.comb += self._clear_pend_mei.eq(1)
 
-        m.d.comb += self.mei_pend.eq((self.ext_irq & self._mie[MInterrupt.MEI]) |
-                                     self._mip[MInterrupt.MEI])
-        m.d.comb += self.mti_pend.eq((self.time_irq & self._mie[MInterrupt.MTI]) |
-                                     self._mip[MInterrupt.MTI])
+        m.d.comb += self.mei_pend.eq(self._mip[MInterrupt.MEI])
+        m.d.comb += self.mti_pend.eq(self._mip[MInterrupt.MTI])
 
         enter_trap_mstatus = self._mstatus
         enter_trap_mstatus &= ~(1 << MStatus.MIE)  # clear MIE

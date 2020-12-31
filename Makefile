@@ -21,7 +21,7 @@ ALL := $(ALLBMC) $(ALLPROVE)
 SRCS := formal_cpu.py sequencer_card.py reg_card.py shift_card.py alu_card.py
 SRCS += transparent_latch.py async_memory.py util.py consts.py
 
-all: | $(ALLBMC)
+all: | $(ALLPROVE)
 	@for i in $(ALL1) $(ALL2) $(ALL3); do \
 	  DIR="formal_cpu_$$i-bmc"; \
 	  if [ -e "$$DIR" -a -f "$$DIR/status" ]; then \
