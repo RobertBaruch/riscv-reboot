@@ -255,11 +255,14 @@ class SequencerCard(Elaboratable):
 
         m.d.comb += self._pc_plus_4.eq(self.state._pc + 4)
         m.d.comb += self.vec_mode.eq(self.state._mtvec[:2])
-        m.d.comb += self.data_z_in_2_lsb0.eq(self.data_z_in[0:2] == 0)
         m.d.comb += self.memaddr_2_lsb.eq(self.state.memaddr[0:2])
         m.d.comb += self.imm0.eq(self._imm == 0)
         m.d.comb += self.rd0.eq(self._rd == 0)
         m.d.comb += self.rs1_0.eq(self._rs1 == 0)
+        # Only used on instruction phase 1 in BRANCH, which is why we can
+        # register this on phase 1. Also, because it's an input to a ROM,
+        # we have to ensure the signal is registered.
+        m.d.ph1 += self.data_z_in_2_lsb0.eq(self.data_z_in[0:2] == 0)
 
         with m.If(self.set_instr_complete):
             m.d.comb += self.instr_complete.eq(self.mcycle_end)
@@ -277,6 +280,9 @@ class SequencerCard(Elaboratable):
         m.d.comb += self.instr_misalign.eq(
             all_true(self.state._pc[0:2] != 0, ~self.state.trap))
 
+        m.d.comb += self.enable_sequencer_rom.eq(
+            ~self.state.trap & ~self.instr_misalign & ~self.bad_instr)
+
         self.encode_opcode_select(m)
         self.encode_trapcause(m)
         self.connect_roms(m)
@@ -286,8 +292,6 @@ class SequencerCard(Elaboratable):
         return m
 
     def connect_roms(self, m: Module):
-        m.d.comb += self.enable_sequencer_rom.eq(
-            self.trap_rom.enable_sequencer_rom)
         m.d.comb += self.rom.enable_sequencer_rom.eq(self.enable_sequencer_rom)
         m.d.comb += self.irq_load_rom.enable_sequencer_rom.eq(
             self.enable_sequencer_rom)

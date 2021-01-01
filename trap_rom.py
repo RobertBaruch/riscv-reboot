@@ -27,7 +27,7 @@ class TrapROM(Elaboratable):
         self.vec_mode = Signal(2)
         self._instr_phase = Signal(2)
 
-        # Outputs (32 bits)
+        # Outputs (31 bits)
 
         self.set_instr_complete = Signal()
 
@@ -76,8 +76,6 @@ class TrapROM(Elaboratable):
         self.next_exception = Signal()
         self.next_fatal = Signal()
 
-        self.enable_sequencer_rom = Signal()
-
     def elaborate(self, _: Platform) -> Module:
         """Implements the logic of the trap sequencer ROM."""
         m = Module()
@@ -103,7 +101,6 @@ class TrapROM(Elaboratable):
             self.exit_trap.eq(0),
             self.clear_pend_mti.eq(0),
             self.clear_pend_mei.eq(0),
-            self.enable_sequencer_rom.eq(0),
         ]
 
         m.d.comb += [
@@ -132,9 +129,6 @@ class TrapROM(Elaboratable):
         with m.Elif(self.bad_instr):
             self.set_exception(
                 m, TrapCauseSelect.EXC_ILLEGAL_INSTR, mtval=self._instr_to_z)
-
-        with m.Else():
-            m.d.comb += self.enable_sequencer_rom.eq(1)
 
         return m
 

@@ -19,10 +19,17 @@ class SequencerROM(Elaboratable):
         self.enable_sequencer_rom = Signal()
 
         # Inputs: 9 + 11 decoder
+        # Since this is implemented by a ROM, the address lines
+        # must be stable in order for the outputs to start becoming
+        # stable. This means that if any input address depends on
+        # any output data combinatorically, there's a danger of
+        # going unstable. Therefore, all address lines must be
+        # registered, or come combinatorically from registered data.
 
         self.memaddr_2_lsb = Signal(2)
         self.branch_cond = Signal()
         self._instr_phase = Signal(2)
+        # Only used on instruction phase 1 in BRANCH.
         self.data_z_in_2_lsb0 = Signal()
         self.imm0 = Signal()
         self.rd0 = Signal()
