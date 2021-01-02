@@ -357,8 +357,6 @@ class SequencerCard(Elaboratable):
             self._next_instr_phase.eq(
                 self.rom._next_instr_phase | self.trap_rom._next_instr_phase),
 
-            self._imm_format.eq(self.rom._imm_format),
-
             self._x_reg_select.eq(self.rom._x_reg_select),
             self._y_reg_select.eq(self.rom._y_reg_select),
             self._z_reg_select.eq(self.rom._z_reg_select),
@@ -450,36 +448,48 @@ class SequencerCard(Elaboratable):
 
     def encode_opcode_select(self, m: Module):
         m.d.comb += self.opcode_select.eq(OpcodeSelect.NONE)
+        m.d.comb += self._imm_format.eq(OpcodeFormat.R)
 
         with m.Switch(self._opcode):
             with m.Case(Opcode.LUI):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.LUI)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.U)
 
             with m.Case(Opcode.AUIPC):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.AUIPC)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.U)
 
             with m.Case(Opcode.OP_IMM):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.OP_IMM)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.I)
 
             with m.Case(Opcode.OP):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.OP)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.R)
 
             with m.Case(Opcode.JAL):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.JAL)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.J)
 
             with m.Case(Opcode.JALR):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.JALR)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.J)
 
             with m.Case(Opcode.BRANCH):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.BRANCH)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.B)
 
             with m.Case(Opcode.LOAD):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.LOAD)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.I)
 
             with m.Case(Opcode.STORE):
                 m.d.comb += self.opcode_select.eq(OpcodeSelect.STORE)
+                m.d.comb += self._imm_format.eq(OpcodeFormat.S)
 
             with m.Case(Opcode.SYSTEM):
+                m.d.comb += self._imm_format.eq(OpcodeFormat.SYS)
+
                 with m.If(self._funct3 == SystemFunc.PRIV):
                     with m.Switch(self.state._instr):
                         with m.Case(Instr.MRET):

@@ -23,11 +23,11 @@ SRCS += transparent_latch.py async_memory.py util.py consts.py
 
 all: | $(ALLPROVE)
 	@for i in $(ALL1) $(ALL2) $(ALL3); do \
-	  DIR="formal_cpu_$$i-bmc"; \
+	  DIR="formal_cpu_$$i-prove"; \
 	  if [ -e "$$DIR" -a -f "$$DIR/status" ]; then \
-	    printf "%-15s: %s\n" "$$i-bmc" "`cat $$DIR/status`"; \
+	    printf "%-15s: %s\n" "$$i-prove" "`cat $$DIR/status`"; \
 	  else \
-	  	printf "%-15s: %s\n" "$$i-bmc" "UNCOMPLETED"; \
+	  	printf "%-15s: %s\n" "$$i-prove" "UNCOMPLETED"; \
 	  fi; \
 	done
 

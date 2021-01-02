@@ -41,7 +41,7 @@ class SequencerROM(Elaboratable):
         self._alu_func = Signal(4)
 
         ##############
-        # Outputs (48 bits + 28 other bits = 76 bits total)
+        # Outputs (73 bits total)
         ##############
 
         # Raised on the last phase of an instruction.
@@ -61,8 +61,6 @@ class SequencerROM(Elaboratable):
         self.mem_wr_mask = Signal(4)
 
         self._next_instr_phase = Signal(2)
-
-        self._imm_format = Signal(OpcodeFormat)  # 3 bits
 
         self._x_reg_select = Signal(InstrReg)  # 2 bits
         self._y_reg_select = Signal(InstrReg)  # 2 bits
@@ -311,7 +309,6 @@ class SequencerROM(Elaboratable):
         PC + 4  -> memaddr
         """
         m.d.comb += [
-            self._imm_format.eq(OpcodeFormat.U),
             self.reg_to_x.eq(1),
             self._x_reg_select.eq(InstrReg.ZERO),
             self._imm_to_y.eq(1),
@@ -334,7 +331,6 @@ class SequencerROM(Elaboratable):
         PC + 4  -> memaddr
         """
         m.d.comb += [
-            self._imm_format.eq(OpcodeFormat.U),
             self._pc_to_x.eq(1),
             self._imm_to_y.eq(1),
             self.alu_op_to_z.eq(AluOp.ADD),
@@ -360,7 +356,6 @@ class SequencerROM(Elaboratable):
             self.handle_illegal_instr(m)
         with m.Else():
             m.d.comb += [
-                self._imm_format.eq(OpcodeFormat.I),
                 self.reg_to_x.eq(1),
                 self._x_reg_select.eq(InstrReg.RS1),
                 self._imm_to_y.eq(1),
@@ -407,7 +402,6 @@ class SequencerROM(Elaboratable):
             self.handle_illegal_instr(m)
         with m.Else():
             m.d.comb += [
-                self._imm_format.eq(OpcodeFormat.R),
                 self.reg_to_x.eq(1),
                 self._x_reg_select.eq(InstrReg.RS1),
                 self.reg_to_y.eq(1),
@@ -456,8 +450,6 @@ class SequencerROM(Elaboratable):
         assumed to be aligned, there is no loss in generality to clear
         the least significant bit when transferring memaddr to PC.
         """
-        m.d.comb += self._imm_format.eq(OpcodeFormat.J)
-
         with m.If(self._instr_phase == 0):
             m.d.comb += [
                 self._pc_to_x.eq(1),
@@ -491,8 +483,6 @@ class SequencerROM(Elaboratable):
         Z       -> rd
         memaddr -> PC  # This will zero the least significant bit
         """
-        m.d.comb += self._imm_format.eq(OpcodeFormat.J)
-
         with m.If(self._instr_phase == 0):
             m.d.comb += [
                 self.reg_to_x.eq(1),
@@ -535,8 +525,6 @@ class SequencerROM(Elaboratable):
         PC + 4  -> PC
         PC + 4  -> memaddr
         """
-        m.d.comb += self._imm_format.eq(OpcodeFormat.B)
-
         with m.If(self._instr_phase == 0):
             m.d.comb += [
                 self.reg_to_x.eq(1),
@@ -642,8 +630,6 @@ class SequencerROM(Elaboratable):
         PC + 4      -> PC
         PC + 4      -> memaddr
         """
-        m.d.comb += self._imm_format.eq(OpcodeFormat.I)
-
         with m.If(self._instr_phase == 0):
             m.d.comb += [
                 self.reg_to_x.eq(1),
@@ -767,8 +753,6 @@ class SequencerROM(Elaboratable):
         PC + 4  -> PC
         PC + 4  -> memaddr
         """
-        m.d.comb += self._imm_format.eq(OpcodeFormat.S)
-
         with m.If(self._instr_phase == 0):
             m.d.comb += [
                 self.reg_to_x.eq(1),
@@ -875,8 +859,6 @@ class SequencerROM(Elaboratable):
 
         The mhartid, because we only have one HART, can just return zero.
         """
-        m.d.comb += self._imm_format.eq(OpcodeFormat.SYS)
-
         with m.Switch(self._funct3):
             with m.Case(SystemFunc.CSRRW):
                 self.handle_CSRRW(m)
