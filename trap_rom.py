@@ -6,7 +6,7 @@ from nmigen import Signal, Module, Elaboratable
 from nmigen.build import Platform
 
 from consts import AluOp
-from consts import TrapCauseSelect
+from consts import TrapCauseSelect, SeqMuxSelect
 from util import all_true
 
 
@@ -43,23 +43,20 @@ class TrapROM(Elaboratable):
         self._trapcause_to_x = Signal()
 
         # -> Y
-        self._pc_to_y = Signal()
-        self._pc_plus_4_to_y = Signal()
-        self._mtvec_30_to_y = Signal()
+        self.y_mux_select = Signal(SeqMuxSelect)
 
         # -> Z
+        self.z_mux_select = Signal(SeqMuxSelect)
         self.alu_op_to_z = Signal(AluOp)  # 4 bits
-        self._pc_to_z = Signal()
-        self._instr_to_z = Signal()
 
         # -> PC
-        self._z_30_to_pc = Signal()
+        self.pc_mux_select = Signal(SeqMuxSelect)
 
         # -> csr_num
         self._mcause_to_csr_num = Signal()
 
         # -> memaddr
-        self._z_30_to_memaddr = Signal()
+        self.memaddr_mux_select = Signal(SeqMuxSelect)
 
         # -> various CSRs
         self._trapcause_select = Signal(TrapCauseSelect)  # 4 bits
@@ -87,20 +84,17 @@ class TrapROM(Elaboratable):
             self.csr_to_x.eq(0),
             self._next_instr_phase.eq(0),
             self._trapcause_to_x.eq(0),
-            self._pc_to_y.eq(0),
-            self._pc_plus_4_to_y.eq(0),
-            self._mtvec_30_to_y.eq(0),
             self.alu_op_to_z.eq(AluOp.NONE),
-            self._pc_to_z.eq(0),
-            self._instr_to_z.eq(0),
-            self._z_30_to_pc.eq(0),
             self._mcause_to_csr_num.eq(0),
-            self._z_30_to_memaddr.eq(0),
             self._trapcause_select.eq(TrapCauseSelect.NONE),
             self.enter_trap.eq(0),
             self.exit_trap.eq(0),
             self.clear_pend_mti.eq(0),
             self.clear_pend_mei.eq(0),
+            self.y_mux_select.eq(SeqMuxSelect.Y),
+            self.z_mux_select.eq(SeqMuxSelect.Z),
+            self.pc_mux_select.eq(SeqMuxSelect.PC),
+            self.memaddr_mux_select.eq(SeqMuxSelect.MEMADDR),
         ]
 
         m.d.comb += [
@@ -124,15 +118,15 @@ class TrapROM(Elaboratable):
         # True when pc[0:2] != 0 and ~trap.
         with m.Elif(self.instr_misalign):
             self.set_exception(
-                m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=self._pc_to_z)
+                m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.PC)
 
         with m.Elif(self.bad_instr):
             self.set_exception(
-                m, TrapCauseSelect.EXC_ILLEGAL_INSTR, mtval=self._instr_to_z)
+                m, TrapCauseSelect.EXC_ILLEGAL_INSTR, mtval=SeqMuxSelect.INSTR)
 
         return m
 
-    def set_exception(self, m: Module, exc: TrapCauseSelect, mtval: Signal, fatal: bool = True):
+    def set_exception(self, m: Module, exc: TrapCauseSelect, mtval: SeqMuxSelect, fatal: bool = True):
         m.d.comb += self.load_exception.eq(1)
         m.d.comb += self.next_exception.eq(1)
         m.d.comb += self.next_fatal.eq(1 if fatal else 0)
@@ -140,12 +134,12 @@ class TrapROM(Elaboratable):
         m.d.comb += self._trapcause_select.eq(exc)
         m.d.comb += self._trapcause_to_x.eq(1)
 
-        m.d.comb += mtval.eq(1)  # what goes to z
+        m.d.comb += self.z_mux_select.eq(mtval)
 
         if fatal:
-            m.d.comb += self._pc_to_y.eq(1)
+            m.d.comb += self.y_mux_select.eq(SeqMuxSelect.PC)
         else:
-            m.d.comb += self._pc_plus_4_to_y.eq(1)
+            m.d.comb += self.y_mux_select.eq(SeqMuxSelect.PC_PLUS_4)
 
         # X -> MCAUSE, Y -> MEPC, Z -> MTVAL
         m.d.comb += self.save_trap_csrs.eq(1)
@@ -179,14 +173,19 @@ class TrapROM(Elaboratable):
                     m.d.comb += self._trapcause_to_x.eq(1)
                     m.d.comb += self.clear_pend_mti.eq(1)
 
-                m.d.comb += self._pc_to_y.eq(1)
+                m.d.comb += self.y_mux_select.eq(SeqMuxSelect.PC)
 
                 # MTVAL should be zero for non-exceptions, but right now it's just random.
                 # X -> MCAUSE, Y -> MEPC, Z -> MTVAL
                 m.d.comb += self.save_trap_csrs.eq(1)
 
         with m.Else():
-            m.d.comb += self._mtvec_30_to_y.eq(1)  # mtvec >> 2
+            # In vectored mode, we calculate the target address with:
+            # ((mtvec >> 2) + cause) << 2. This is the same as
+            # (mtvec & 0xFFFFFFFC) + 4 * cause, but doesn't require
+            # the cause to be shifted before adding.
+            # mtvec >> 2
+            m.d.comb += self.y_mux_select.eq(SeqMuxSelect.MTVEC_LSR2)
             with m.If(all_true(is_int, self.vec_mode == 1)):
                 m.d.comb += [
                     self._mcause_to_csr_num.eq(1),
@@ -197,8 +196,9 @@ class TrapROM(Elaboratable):
             m.d.comb += self.next_trap.eq(0)
             m.d.comb += [
                 self.alu_op_to_z.eq(AluOp.ADD),
-                self._z_30_to_memaddr.eq(1),  # z << 2 -> memaddr, pc
-                self._z_30_to_pc.eq(1),
+                self.memaddr_mux_select.eq(
+                    SeqMuxSelect.Z_LSL2),  # z << 2 -> memaddr, pc
+                self.pc_mux_select.eq(SeqMuxSelect.Z_LSL2),
                 self.enter_trap.eq(1),
                 self.set_instr_complete.eq(1),
             ]

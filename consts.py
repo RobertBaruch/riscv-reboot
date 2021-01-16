@@ -248,3 +248,35 @@ class NextPC(IntEnum):
     MEMADDR = 1
     Z = 2
     X = 3
+    MEMADDR_NO_LSB = 4
+
+
+@unique
+class SeqMuxSelect(IntEnum):
+    """Which input is selected in a reg/buff multiplexer card.
+
+    For outputting to bus X, Y, or Z, if the selection is the
+    same as the output bus -- that is, we send the bus to the bus itself --
+    then the bus is actually disabled so that some other card can
+    control the bus.
+
+    When we want to output the trap cause or a non-MTVEC CSR to X, that's a different
+    signal, which isn't handled by the mux card, so we set the selection
+    to X in that case.
+    """
+    MEMDATA_WR = 0
+    MEMDATA_RD = 1
+    MEMADDR = 2
+    MEMADDR_LSB_MASKED = 3
+    PC = 4
+    PC_PLUS_4 = 5
+    MTVEC = 6
+    MTVEC_LSR2 = 7
+    TMP = 8
+    IMM = 9
+    INSTR = 10
+    X = 11
+    Y = 12
+    Z = 13
+    Z_LSL2 = 14
+    SHAMT = 15

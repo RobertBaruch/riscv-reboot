@@ -5,13 +5,14 @@
 from typing import List, Tuple
 
 from nmigen import Signal, Module, Elaboratable, signed, ClockSignal, ClockDomain, Repl
+from nmigen import Mux
 from nmigen.build import Platform
 from nmigen.asserts import Assert, Assume, Cover, Stable, Past
 
 from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
 from consts import Opcode, OpcodeFormat, SystemFunc, TrapCause, PrivFunc
 from consts import InstrReg, OpcodeSelect, TrapCauseSelect
-from consts import NextPC, Instr
+from consts import NextPC, Instr, SeqMuxSelect
 from transparent_latch import TransparentLatch
 from util import main, all_true
 from IC_7416244 import IC_mux32
@@ -172,38 +173,22 @@ class SequencerCard(Elaboratable):
 
         # -> X
         self.reg_to_x = Signal()
-        self._pc_to_x = Signal()
-        self._memdata_to_x = Signal()
+        self.x_mux_select = Signal(SeqMuxSelect)
         self._trapcause_to_x = Signal()
 
         # -> Y
         self.reg_to_y = Signal()
-        self._imm_to_y = Signal()
-        self._shamt_to_y = Signal()
-        self._pc_to_y = Signal()
-        self._pc_plus_4_to_y = Signal()
-        self._mtvec_30_to_y = Signal()
+        self.y_mux_select = Signal(SeqMuxSelect)
 
         # -> Z
-        self._pc_plus_4_to_z = Signal()
-        self._tmp_to_z = Signal()
+        self.z_mux_select = Signal(SeqMuxSelect)
         self.alu_op_to_z = Signal(AluOp)  # 4 bits
-        self._pc_to_z = Signal()
-        self._instr_to_z = Signal()
-        self._memaddr_to_z = Signal()
-        self._memaddr_lsb_masked_to_z = Signal()
 
         # -> PC
-        self._pc_plus_4_to_pc = Signal()
-        self._z_to_pc = Signal()
-        self._x_to_pc = Signal()
-        self._memaddr_to_pc = Signal()
-        self._memdata_to_pc = Signal()
-        self._z_30_to_pc = Signal()
+        self.pc_mux_select = Signal(SeqMuxSelect)
 
         # -> tmp
-        self._x_to_tmp = Signal()
-        self._z_to_tmp = Signal()
+        self.tmp_mux_select = Signal(SeqMuxSelect)
 
         # -> csr_num
         self._funct12_to_csr_num = Signal()
@@ -211,14 +196,10 @@ class SequencerCard(Elaboratable):
         self._mcause_to_csr_num = Signal()
 
         # -> memaddr
-        self._pc_plus_4_to_memaddr = Signal()
-        self._z_to_memaddr = Signal()
-        self._x_to_memaddr = Signal()
-        self._memdata_to_memaddr = Signal()
-        self._z_30_to_memaddr = Signal()
+        self.memaddr_mux_select = Signal(SeqMuxSelect)
 
         # -> memdata
-        self._z_to_memdata = Signal()
+        self.memdata_wr_mux_select = Signal(SeqMuxSelect)
 
         # memory load shamt
         self._shamt = Signal(5)
@@ -363,45 +344,27 @@ class SequencerCard(Elaboratable):
 
             # -> X
             self.reg_to_x.eq(self.rom.reg_to_x),
-            self._pc_to_x.eq(self.rom._pc_to_x),
-            self._memdata_to_x.eq(self.rom._memdata_to_x),
+            self.x_mux_select.eq(self.rom.x_mux_select),
             self._trapcause_to_x.eq(
                 self.rom._trapcause_to_x | self.trap_rom._trapcause_to_x),
 
             # -> Y
             self.reg_to_y.eq(self.rom.reg_to_y),
-            self._imm_to_y.eq(self.rom._imm_to_y),
-            self._shamt_to_y.eq(self.rom._shamt_to_y),
-            self._pc_to_y.eq(self.rom._pc_to_y | self.trap_rom._pc_to_y),
-            self._pc_plus_4_to_y.eq(
-                self.rom._pc_plus_4_to_y | self.trap_rom._pc_plus_4_to_y),
-            self._mtvec_30_to_y.eq(
-                self.rom._mtvec_30_to_y | self.trap_rom._mtvec_30_to_y),
+            self.y_mux_select.eq(Mux(self.rom.y_mux_select == SeqMuxSelect.Y,
+                                     self.trap_rom.y_mux_select, self.rom.y_mux_select)),
 
             # -> Z
-            self._pc_plus_4_to_z.eq(self.rom._pc_plus_4_to_z),
-            self._tmp_to_z.eq(self.rom._tmp_to_z),
+            self.z_mux_select.eq(Mux(self.rom.z_mux_select == SeqMuxSelect.Z,
+                                     self.trap_rom.z_mux_select, self.rom.z_mux_select)),
             self.alu_op_to_z.eq(self.rom.alu_op_to_z |
                                 self.trap_rom.alu_op_to_z),
-            self._pc_to_z.eq(self.rom._pc_to_z | self.trap_rom._pc_to_z),
-            self._instr_to_z.eq(self.rom._instr_to_z |
-                                self.trap_rom._instr_to_z),
-            self._memaddr_to_z.eq(self.rom._memaddr_to_z),
-            self._memaddr_lsb_masked_to_z.eq(
-                self.rom._memaddr_lsb_masked_to_z),
 
             # -> PC
-            self._pc_plus_4_to_pc.eq(self.rom._pc_plus_4_to_pc),
-            self._z_to_pc.eq(self.rom._z_to_pc),
-            self._x_to_pc.eq(self.rom._x_to_pc),
-            self._memaddr_to_pc.eq(self.rom._memaddr_to_pc),
-            self._memdata_to_pc.eq(self.rom._memdata_to_pc),
-            self._z_30_to_pc.eq(self.rom._z_30_to_pc |
-                                self.trap_rom._z_30_to_pc),
+            self.pc_mux_select.eq(Mux(self.rom.pc_mux_select == SeqMuxSelect.PC,
+                                      self.trap_rom.pc_mux_select, self.rom.pc_mux_select)),
 
             # -> tmp
-            self._x_to_tmp.eq(self.rom._x_to_tmp),
-            self._z_to_tmp.eq(self.rom._z_to_tmp),
+            self.tmp_mux_select.eq(self.rom.tmp_mux_select),
 
             # -> csr_num
             self._funct12_to_csr_num.eq(self.rom._funct12_to_csr_num),
@@ -410,15 +373,11 @@ class SequencerCard(Elaboratable):
                 self.rom._mcause_to_csr_num | self.trap_rom._mcause_to_csr_num),
 
             # -> memaddr
-            self._pc_plus_4_to_memaddr.eq(self.rom._pc_plus_4_to_memaddr),
-            self._z_to_memaddr.eq(self.rom._z_to_memaddr),
-            self._x_to_memaddr.eq(self.rom._x_to_memaddr),
-            self._memdata_to_memaddr.eq(self.rom._memdata_to_memaddr),
-            self._z_30_to_memaddr.eq(
-                self.rom._z_30_to_memaddr | self.trap_rom._z_30_to_memaddr),
+            self.memaddr_mux_select.eq(Mux(self.rom.memaddr_mux_select == SeqMuxSelect.MEMADDR,
+                                           self.trap_rom.memaddr_mux_select, self.rom.memaddr_mux_select)),
 
             # -> memdata
-            self._z_to_memdata.eq(self.rom._z_to_memdata),
+            self.memdata_wr_mux_select.eq(self.rom.memdata_wr_mux_select),
 
             # memory load shamt
             self._shamt.eq(self.rom._shamt),
@@ -658,188 +617,187 @@ class SequencerCard(Elaboratable):
                               ],
                               sigs=[self.data_z_in])
 
+    def multiplex_to(self, m: Module, sig: Signal, sel: Signal, clk: str):
+        with m.Switch(sel):
+            with m.Case(SeqMuxSelect.MEMDATA_WR):
+                m.d[clk] += sig.eq(self.state.memdata_wr)
+            with m.Case(SeqMuxSelect.MEMDATA_RD):
+                m.d[clk] += sig.eq(self.memdata_rd)
+            with m.Case(SeqMuxSelect.MEMADDR):
+                m.d[clk] += sig.eq(self.state.memaddr)
+            with m.Case(SeqMuxSelect.MEMADDR_LSB_MASKED):
+                m.d[clk] += sig.eq(self.state.memaddr & 0xFFFFFFFE)
+            with m.Case(SeqMuxSelect.PC):
+                m.d[clk] += sig.eq(self.state._pc)
+            with m.Case(SeqMuxSelect.PC_PLUS_4):
+                m.d[clk] += sig.eq(self._pc_plus_4)
+            with m.Case(SeqMuxSelect.MTVEC):
+                m.d[clk] += sig.eq(self.state._mtvec)
+            with m.Case(SeqMuxSelect.MTVEC_LSR2):
+                m.d[clk] += sig.eq(self.state._mtvec >> 2)
+            with m.Case(SeqMuxSelect.TMP):
+                m.d[clk] += sig.eq(self.state._tmp)
+            with m.Case(SeqMuxSelect.IMM):
+                m.d[clk] += sig.eq(self._imm)
+            with m.Case(SeqMuxSelect.INSTR):
+                m.d[clk] += sig.eq(self.state._instr)
+            with m.Case(SeqMuxSelect.X):
+                m.d[clk] += sig.eq(self.data_x_in)
+            with m.Case(SeqMuxSelect.Y):
+                m.d[clk] += sig.eq(self.data_y_in)
+            with m.Case(SeqMuxSelect.Z):
+                m.d[clk] += sig.eq(self.data_z_in)
+            with m.Case(SeqMuxSelect.Z_LSL2):
+                m.d[clk] += sig.eq(self.data_z_in << 2)
+            with m.Case(SeqMuxSelect.SHAMT):
+                m.d[clk] += sig.eq(self._shamt)
+
     def multiplex_to_pc(self, m: Module):
-        with m.If(self._pc_plus_4_to_pc):
-            m.d.ph1 += self.state._pc.eq(self._pc_plus_4)
-        with m.Elif(self._x_to_pc):
-            m.d.ph1 += self.state._pc.eq(self.data_x_in)
-        with m.Elif(self._z_to_pc):
-            m.d.ph1 += self.state._pc.eq(self.data_z_in)
-        with m.Elif(self._memaddr_to_pc):
-            # This is the result of a JAL or JALR instruction.
-            # See the comment on JAL for why this is okay to do.
-            m.d.ph1 += self.state._pc[1:].eq(self.state.memaddr[1:])
-            m.d.ph1 += self.state._pc[0].eq(0)
-        with m.Elif(self._memdata_to_pc):
-            m.d.ph1 += self.state._pc.eq(self.memdata_rd)
-        with m.Elif(self._z_30_to_pc):
-            m.d.ph1 += self.state._pc.eq(self.data_z_in << 2)
+        self.multiplex_to(m, self.state._pc, self.pc_mux_select, clk="ph1")
 
     def multiplex_to_pc_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk="ph1", reg=self.state._pc,
-                              sels=[
-                                  self._pc_plus_4_to_pc,
-                                  self._x_to_pc,
-                                  self._z_to_pc,
-                                  self._memaddr_to_pc,
-                                  self._memdata_to_pc,
-                                  self._z_30_to_pc,
-                              ],
-                              sigs=[
-                                  self._pc_plus_4,
-                                  self.data_x_in,
-                                  self.data_z_in,
-                                  self.state.memaddr & 0xFFFFFFFE,
-                                  self.memdata_rd,
-                                  self.data_z_in << 2,
-                              ])
+        self.multiplex_to_pc(m)
+        # self.multiplex_to_reg(m, clk="ph1", reg=self.state._pc,
+        #                       sels=[
+        #                           self._pc_plus_4_to_pc,
+        #                           self._x_to_pc,
+        #                           self._z_to_pc,
+        #                           self._memaddr_to_pc,
+        #                           self._memdata_to_pc,
+        #                           self._z_30_to_pc,
+        #                       ],
+        #                       sigs=[
+        #                           self._pc_plus_4,
+        #                           self.data_x_in,
+        #                           self.data_z_in,
+        #                           self.state.memaddr & 0xFFFFFFFE,
+        #                           self.memdata_rd,
+        #                           self.data_z_in << 2,
+        #                       ])
 
     def multiplex_to_tmp(self, m: Module):
-        with m.If(self._x_to_tmp):
-            m.d.ph2w += self.state._tmp.eq(self.data_x_in)
-        with m.Elif(self._z_to_tmp):
-            m.d.ph2w += self.state._tmp.eq(self.data_z_in)
+        self.multiplex_to(m, self.state._tmp, self.tmp_mux_select, clk="ph2w")
 
     def multiplex_to_tmp_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._tmp,
-                              sels=[
-                                  self._x_to_tmp,
-                                  self._z_to_tmp,
-                              ],
-                              sigs=[
-                                  self.data_x_in,
-                                  self.data_z_in,
-                              ])
+        self.multiplex_to_tmp(m)
+        # self.multiplex_to_reg(m, clk="ph2w", reg=self.state._tmp,
+        #                       sels=[
+        #                           self._x_to_tmp,
+        #                           self._z_to_tmp,
+        #                       ],
+        #                       sigs=[
+        #                           self.data_x_in,
+        #                           self.data_z_in,
+        #                       ])
 
     def multiplex_to_memdata(self, m: Module):
-        with m.If(self._z_to_memdata):
-            m.d.ph1 += self.state.memdata_wr.eq(self.data_z_in)
+        self.multiplex_to(m, self.state.memdata_wr,
+                          self.memdata_wr_mux_select, clk="ph1")
 
     def multiplex_to_memdata_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk="ph1", reg=self.state.memdata_wr,
-                              sels=[
-                                  self._z_to_memdata,
-                              ],
-                              sigs=[
-                                  self.data_z_in,
-                              ])
+        self.multiplex_to_memdata(m)
+        # self.multiplex_to_reg(m, clk="ph1", reg=self.state.memdata_wr,
+        #                       sels=[
+        #                           self._z_to_memdata,
+        #                       ],
+        #                       sigs=[
+        #                           self.data_z_in,
+        #                       ])
 
     def multiplex_to_memaddr(self, m: Module):
-        with m.If(self._pc_plus_4_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self._pc_plus_4)
-        with m.Elif(self._x_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self.data_x_in)
-        with m.Elif(self._z_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self.data_z_in)
-        with m.Elif(self._memdata_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self.memdata_rd)
-        with m.Elif(self._z_30_to_memaddr):
-            m.d.ph1 += self.state.memaddr.eq(self.data_z_in << 2)
+        self.multiplex_to(m, self.state.memaddr,
+                          self.memaddr_mux_select, clk="ph1")
 
     def multiplex_to_memaddr_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk="ph1", reg=self.state.memaddr,
-                              sels=[
-                                  self._pc_plus_4_to_memaddr,
-                                  self._x_to_memaddr,
-                                  self._z_to_memaddr,
-                                  self._memdata_to_memaddr,
-                                  self._z_30_to_memaddr,
-                              ],
-                              sigs=[
-                                  self._pc_plus_4,
-                                  self.data_x_in,
-                                  self.data_z_in,
-                                  self.memdata_rd,
-                                  self.data_z_in << 2,
-                              ])
+        self.multiplex_to_memaddr(m)
+        # self.multiplex_to_reg(m, clk="ph1", reg=self.state.memaddr,
+        #                       sels=[
+        #                           self._pc_plus_4_to_memaddr,
+        #                           self._x_to_memaddr,
+        #                           self._z_to_memaddr,
+        #                           self._memdata_to_memaddr,
+        #                           self._z_30_to_memaddr,
+        #                       ],
+        #                       sigs=[
+        #                           self._pc_plus_4,
+        #                           self.data_x_in,
+        #                           self.data_z_in,
+        #                           self.memdata_rd,
+        #                           self.data_z_in << 2,
+        #                       ])
 
     def multiplex_to_x(self, m: Module):
-        with m.If(self._pc_to_x):
-            m.d.comb += self.data_x_out.eq(self.state._pc)
-        with m.Elif(self._memdata_to_x):
-            m.d.comb += self.data_x_out.eq(self.memdata_rd)
-        with m.Elif(self._trapcause_to_x):
+        with m.If(self._trapcause_to_x):
             m.d.comb += self.data_x_out.eq(self._trapcause)
         with m.Elif(self.csr_to_x):
             with m.Switch(self.csr_num):
                 with m.Case(CSRAddr.MTVEC):
                     m.d.comb += self.data_x_out.eq(self.state._mtvec)
+        with m.Elif(self.x_mux_select != SeqMuxSelect.X):
+            self.multiplex_to(m, self.data_x_out,
+                              self.x_mux_select, clk="comb")
 
     def multiplex_to_x_chips(self, m: Module):
-        self.multiplex_to_bus(m, bus=self.data_x_out,
-                              sels=[
-                                  self._pc_to_x,
-                                  self._memdata_to_x,
-                                  self._trapcause_to_x,
-                                  self.csr_to_x & (
-                                      self.csr_num == CSRAddr.MTVEC),
-                              ],
-                              sigs=[self.state._pc, self.memdata_rd, self._trapcause,
-                                    self.state._mtvec,
-                                    ])
+        self.multiplex_to_x(m)
+        # self.multiplex_to_bus(m, bus=self.data_x_out,
+        #                       sels=[
+        #                           self._pc_to_x,
+        #                           self._memdata_to_x,
+        #                           self._trapcause_to_x,
+        #                           self.csr_to_x & (
+        #                               self.csr_num == CSRAddr.MTVEC),
+        #                       ],
+        #                       sigs=[self.state._pc, self.memdata_rd, self._trapcause,
+        #                             self.state._mtvec,
+        #                             ])
 
     def multiplex_to_y(self, m: Module):
-        with m.If(self._imm_to_y):
-            m.d.comb += self.data_y_out.eq(self._imm)
-        with m.Elif(self._shamt_to_y):
-            m.d.comb += self.data_y_out.eq(self._shamt)
-        with m.Elif(self._pc_to_y):
-            m.d.comb += self.data_y_out.eq(self.state._pc)
-        with m.Elif(self._pc_plus_4_to_y):
-            m.d.comb += self.data_y_out.eq(self._pc_plus_4)
-        with m.Elif(self._mtvec_30_to_y):
-            m.d.comb += self.data_y_out.eq(self.state._mtvec >> 2)
+        with m.If(self.y_mux_select != SeqMuxSelect.Y):
+            self.multiplex_to(m, self.data_y_out,
+                              self.y_mux_select, clk="comb")
 
     def multiplex_to_y_chips(self, m: Module):
-        self.multiplex_to_bus(m, bus=self.data_y_out,
-                              sels=[
-                                  self._imm_to_y,
-                                  self._shamt_to_y,
-                                  self._pc_to_y,
-                                  self._pc_plus_4_to_y,
-                                  self._mtvec_30_to_y,
-                              ],
-                              sigs=[
-                                  self._imm,
-                                  self._shamt,
-                                  self.state._pc,
-                                  self._pc_plus_4,
-                                  self.state._mtvec >> 2,
-                              ])
+        self.multiplex_to_y(m)
+        # self.multiplex_to_bus(m, bus=self.data_y_out,
+        #                       sels=[
+        #                           self._imm_to_y,
+        #                           self._shamt_to_y,
+        #                           self._pc_to_y,
+        #                           self._pc_plus_4_to_y,
+        #                           self._mtvec_30_to_y,
+        #                       ],
+        #                       sigs=[
+        #                           self._imm,
+        #                           self._shamt,
+        #                           self.state._pc,
+        #                           self._pc_plus_4,
+        #                           self.state._mtvec >> 2,
+        #                       ])
 
     def multiplex_to_z(self, m: Module):
-        with m.If(self._pc_plus_4_to_z):
-            m.d.comb += self.data_z_out.eq(self._pc_plus_4)
-        with m.Elif(self._tmp_to_z):
-            m.d.comb += self.data_z_out.eq(self.state._tmp)
-        with m.Elif(self._pc_to_z):
-            m.d.comb += self.data_z_out.eq(self.state._pc)
-        with m.Elif(self._instr_to_z):
-            m.d.comb += self.data_z_out.eq(self.state._instr)
-        with m.Elif(self._memaddr_to_z):
-            m.d.comb += self.data_z_out.eq(self.state.memaddr)
-        with m.Elif(self._memaddr_lsb_masked_to_z):
-            m.d.comb += self.data_z_out.eq(
-                self.state.memaddr & 0xFFFFFFFE)
+        with m.If(self.z_mux_select != SeqMuxSelect.Z):
+            self.multiplex_to(m, self.data_z_out,
+                              self.z_mux_select, clk="comb")
 
     def multiplex_to_z_chips(self, m: Module):
-        self.multiplex_to_bus(m, bus=self.data_z_out,
-                              sels=[
-                                  self._pc_plus_4_to_z,
-                                  self._tmp_to_z,
-                                  self._pc_to_z,
-                                  self._instr_to_z,
-                                  self._memaddr_to_z,
-                                  self._memaddr_lsb_masked_to_z,
-                              ],
-                              sigs=[
-                                  self._pc_plus_4,
-                                  self.state._tmp,
-                                  self.state._pc,
-                                  self.state._instr,
-                                  self.state.memaddr,
-                                  self.state.memaddr & 0xFFFFFFFE,
-                              ])
+        self.multiplex_to_z(m)
+        # self.multiplex_to_bus(m, bus=self.data_z_out,
+        #                       sels=[
+        #                           self._pc_plus_4_to_z,
+        #                           self._tmp_to_z,
+        #                           self._pc_to_z,
+        #                           self._instr_to_z,
+        #                           self._memaddr_to_z,
+        #                           self._memaddr_lsb_masked_to_z,
+        #                       ],
+        #                       sigs=[
+        #                           self._pc_plus_4,
+        #                           self.state._tmp,
+        #                           self.state._pc,
+        #                           self.state._instr,
+        #                           self.state.memaddr,
+        #                           self.state.memaddr & 0xFFFFFFFE,
+        #                       ])
 
     def multiplex_to_csr_num(self, m: Module):
         with m.If(self._funct12_to_csr_num):

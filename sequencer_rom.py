@@ -8,7 +8,7 @@ from nmigen.build import Platform
 from consts import AluOp, AluFunc, BranchCond, MemAccessWidth
 from consts import OpcodeFormat, SystemFunc, TrapCauseSelect
 from consts import InstrReg, OpcodeSelect
-from consts import NextPC
+from consts import NextPC, SeqMuxSelect
 
 
 class SequencerROM(Elaboratable):
@@ -41,7 +41,7 @@ class SequencerROM(Elaboratable):
         self._alu_func = Signal(4)
 
         ##############
-        # Outputs (73 bits total)
+        # Outputs (77 bits total)
         ##############
 
         # Raised on the last phase of an instruction.
@@ -51,6 +51,7 @@ class SequencerROM(Elaboratable):
         self.save_trap_csrs = Signal()
 
         # CSR lines
+        self.mtvec_mux_select = Signal(SeqMuxSelect)
         self.csr_to_x = Signal()
         self.z_to_csr = Signal()
 
@@ -67,39 +68,23 @@ class SequencerROM(Elaboratable):
         self._z_reg_select = Signal(InstrReg)  # 2 bits
 
         # -> X
+        self.x_mux_select = Signal(SeqMuxSelect)
         self.reg_to_x = Signal()
-        self._pc_to_x = Signal()
-        self._memdata_to_x = Signal()
         self._trapcause_to_x = Signal()
 
         # -> Y
+        self.y_mux_select = Signal(SeqMuxSelect)
         self.reg_to_y = Signal()
-        self._imm_to_y = Signal()
-        self._shamt_to_y = Signal()
-        self._pc_to_y = Signal()
-        self._pc_plus_4_to_y = Signal()
-        self._mtvec_30_to_y = Signal()
 
         # -> Z
-        self._pc_plus_4_to_z = Signal()
-        self._tmp_to_z = Signal()
+        self.z_mux_select = Signal(SeqMuxSelect)
         self.alu_op_to_z = Signal(AluOp)  # 4 bits
-        self._pc_to_z = Signal()
-        self._instr_to_z = Signal()
-        self._memaddr_to_z = Signal()
-        self._memaddr_lsb_masked_to_z = Signal()
 
         # -> PC
-        self._pc_plus_4_to_pc = Signal()
-        self._z_to_pc = Signal()
-        self._x_to_pc = Signal()
-        self._memaddr_to_pc = Signal()
-        self._memdata_to_pc = Signal()
-        self._z_30_to_pc = Signal()
+        self.pc_mux_select = Signal(SeqMuxSelect)
 
         # -> tmp
-        self._x_to_tmp = Signal()
-        self._z_to_tmp = Signal()
+        self.tmp_mux_select = Signal(SeqMuxSelect)
 
         # -> csr_num
         self._funct12_to_csr_num = Signal()
@@ -107,20 +92,16 @@ class SequencerROM(Elaboratable):
         self._mcause_to_csr_num = Signal()
 
         # -> memaddr
-        self._pc_plus_4_to_memaddr = Signal()
-        self._z_to_memaddr = Signal()
-        self._x_to_memaddr = Signal()
-        self._memdata_to_memaddr = Signal()
-        self._z_30_to_memaddr = Signal()
+        self.memaddr_mux_select = Signal(SeqMuxSelect)
 
         # -> memdata
-        self._z_to_memdata = Signal()
+        self.memdata_wr_mux_select = Signal(SeqMuxSelect)
 
         # memory load shamt
         # There's not a lot of point in multiplexing this, since
         # there are 5 possible values, requiring 3 bits instead of
         # 5. Not much of a savings.
-        self._shamt = Signal(5)
+        self._shamt = Signal(5)  # select: 4 bits
 
         # -> various CSRs
         self._trapcause_select = Signal(TrapCauseSelect)  # 4 bits
@@ -146,36 +127,9 @@ class SequencerROM(Elaboratable):
             self._next_instr_phase.eq(0),
             self._trapcause_select.eq(TrapCauseSelect.NONE),
             self.reg_to_x.eq(0),
-            self._pc_to_x.eq(0),
-            self._memdata_to_x.eq(0),
             self._trapcause_to_x.eq(0),
             self.reg_to_y.eq(0),
-            self._imm_to_y.eq(0),
-            self._shamt_to_y.eq(0),
-            self._pc_to_y.eq(0),
-            self._pc_plus_4_to_y.eq(0),
-            self._mtvec_30_to_y.eq(0),
             self.alu_op_to_z.eq(AluOp.NONE),
-            self._pc_plus_4_to_z.eq(0),
-            self._tmp_to_z.eq(0),
-            self._pc_to_z.eq(0),
-            self._instr_to_z.eq(0),
-            self._memaddr_to_z.eq(0),
-            self._memaddr_lsb_masked_to_z.eq(0),
-            self._pc_plus_4_to_pc.eq(0),
-            self._x_to_pc.eq(0),
-            self._z_to_pc.eq(0),
-            self._z_30_to_pc.eq(0),
-            self._memaddr_to_pc.eq(0),
-            self._memdata_to_pc.eq(0),
-            self._x_to_tmp.eq(0),
-            self._z_to_tmp.eq(0),
-            self._pc_plus_4_to_memaddr.eq(0),
-            self._x_to_memaddr.eq(0),
-            self._z_to_memaddr.eq(0),
-            self._memdata_to_memaddr.eq(0),
-            self._z_30_to_memaddr.eq(0),
-            self._z_to_memdata.eq(0),
             self.mem_rd.eq(0),
             self.mem_wr.eq(0),
             self.mem_wr_mask.eq(0),
@@ -193,6 +147,14 @@ class SequencerROM(Elaboratable):
             self.clear_pend_mti.eq(0),
             self.clear_pend_mei.eq(0),
             self.save_trap_csrs.eq(0),
+            self.pc_mux_select.eq(SeqMuxSelect.PC),
+            self.memaddr_mux_select.eq(SeqMuxSelect.MEMADDR),
+            self.memdata_wr_mux_select.eq(SeqMuxSelect.MEMDATA_WR),
+            self.tmp_mux_select.eq(SeqMuxSelect.TMP),
+            self.mtvec_mux_select.eq(SeqMuxSelect.MTVEC),
+            self.x_mux_select.eq(SeqMuxSelect.X),
+            self.y_mux_select.eq(SeqMuxSelect.Y),
+            self.z_mux_select.eq(SeqMuxSelect.Z),
         ]
 
         m.d.comb += [
@@ -259,18 +221,20 @@ class SequencerROM(Elaboratable):
         """
         m.d.comb += self.set_instr_complete.eq(1)
         if next_pc == NextPC.PC_PLUS_4:
-            m.d.comb += self._pc_plus_4_to_pc.eq(1)
-            m.d.comb += self._pc_plus_4_to_memaddr.eq(1)
+            m.d.comb += self.pc_mux_select.eq(SeqMuxSelect.PC_PLUS_4)
+            m.d.comb += self.memaddr_mux_select.eq(SeqMuxSelect.PC_PLUS_4)
         elif next_pc == NextPC.MEMADDR:
-            m.d.comb += self._memaddr_to_pc.eq(1)
+            m.d.comb += self.pc_mux_select.eq(SeqMuxSelect.MEMADDR)
+        elif next_pc == NextPC.MEMADDR_NO_LSB:
+            m.d.comb += self.pc_mux_select.eq(SeqMuxSelect.MEMADDR_LSB_MASKED)
         elif next_pc == NextPC.Z:
-            m.d.comb += self._z_to_pc.eq(1)
-            m.d.comb += self._z_to_memaddr.eq(1)
+            m.d.comb += self.pc_mux_select.eq(SeqMuxSelect.Z)
+            m.d.comb += self.memaddr_mux_select.eq(SeqMuxSelect.Z)
         elif next_pc == NextPC.X:
-            m.d.comb += self._x_to_pc.eq(1)
-            m.d.comb += self._x_to_memaddr.eq(1)
+            m.d.comb += self.pc_mux_select.eq(SeqMuxSelect.X)
+            m.d.comb += self.memaddr_mux_select.eq(SeqMuxSelect.X)
 
-    def set_exception(self, m: Module, exc: TrapCauseSelect, mtval: Signal, fatal: bool = True):
+    def set_exception(self, m: Module, exc: TrapCauseSelect, mtval: SeqMuxSelect, fatal: bool = True):
         m.d.comb += self.load_exception.eq(1)
         m.d.comb += self.next_exception.eq(1)
         m.d.comb += self.next_fatal.eq(1 if fatal else 0)
@@ -278,12 +242,12 @@ class SequencerROM(Elaboratable):
         m.d.comb += self._trapcause_select.eq(exc)
         m.d.comb += self._trapcause_to_x.eq(1)
 
-        m.d.comb += mtval.eq(1)  # what goes to z
+        m.d.comb += self.z_mux_select.eq(mtval)
 
         if fatal:
-            m.d.comb += self._pc_to_y.eq(1)
+            m.d.comb += self.y_mux_select.eq(SeqMuxSelect.PC)
         else:
-            m.d.comb += self._pc_plus_4_to_y.eq(1)
+            m.d.comb += self.y_mux_select.eq(SeqMuxSelect.PC_PLUS_4)
 
         # X -> MCAUSE, Y -> MEPC, Z -> MTVAL
         m.d.comb += self.save_trap_csrs.eq(1)
@@ -293,7 +257,7 @@ class SequencerROM(Elaboratable):
 
     def handle_illegal_instr(self, m: Module):
         self.set_exception(m, TrapCauseSelect.EXC_ILLEGAL_INSTR,
-                           mtval=self._instr_to_z)
+                           mtval=SeqMuxSelect.INSTR)
 
     def handle_lui(self, m: Module):
         """Adds the LUI logic to the given module.
@@ -311,7 +275,7 @@ class SequencerROM(Elaboratable):
         m.d.comb += [
             self.reg_to_x.eq(1),
             self._x_reg_select.eq(InstrReg.ZERO),
-            self._imm_to_y.eq(1),
+            self.y_mux_select.eq(SeqMuxSelect.IMM),
             self.alu_op_to_z.eq(AluOp.ADD),
             self._z_reg_select.eq(InstrReg.RD),
         ]
@@ -331,8 +295,8 @@ class SequencerROM(Elaboratable):
         PC + 4  -> memaddr
         """
         m.d.comb += [
-            self._pc_to_x.eq(1),
-            self._imm_to_y.eq(1),
+            self.x_mux_select.eq(SeqMuxSelect.PC),
+            self.y_mux_select.eq(SeqMuxSelect.IMM),
             self.alu_op_to_z.eq(AluOp.ADD),
             self._z_reg_select.eq(InstrReg.RD),
         ]
@@ -358,7 +322,7 @@ class SequencerROM(Elaboratable):
             m.d.comb += [
                 self.reg_to_x.eq(1),
                 self._x_reg_select.eq(InstrReg.RS1),
-                self._imm_to_y.eq(1),
+                self.y_mux_select.eq(SeqMuxSelect.IMM),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
             with m.Switch(self._alu_func):
@@ -452,22 +416,22 @@ class SequencerROM(Elaboratable):
         """
         with m.If(self._instr_phase == 0):
             m.d.comb += [
-                self._pc_to_x.eq(1),
-                self._imm_to_y.eq(1),
+                self.x_mux_select.eq(SeqMuxSelect.PC),
+                self.y_mux_select.eq(SeqMuxSelect.IMM),
                 self.alu_op_to_z.eq(AluOp.ADD),
-                self._z_to_memaddr.eq(1),
+                self.memaddr_mux_select.eq(SeqMuxSelect.Z),
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
             with m.If(self.memaddr_2_lsb[1] != 0):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
             with m.Else():
                 m.d.comb += [
-                    self._pc_plus_4_to_z.eq(1),
+                    self.z_mux_select.eq(SeqMuxSelect.PC_PLUS_4),
                     self._z_reg_select.eq(InstrReg.RD),
                 ]
-                self.next_instr(m, NextPC.MEMADDR)
+                self.next_instr(m, NextPC.MEMADDR_NO_LSB)
 
     def handle_jalr(self, m: Module):
         """Adds the JALR logic to the given module.
@@ -487,21 +451,21 @@ class SequencerROM(Elaboratable):
             m.d.comb += [
                 self.reg_to_x.eq(1),
                 self._x_reg_select.eq(InstrReg.RS1),
-                self._imm_to_y.eq(1),
+                self.y_mux_select.eq(SeqMuxSelect.IMM),
                 self.alu_op_to_z.eq(AluOp.ADD),
-                self._z_to_memaddr.eq(1),
+                self.memaddr_mux_select.eq(SeqMuxSelect.Z),
                 self._next_instr_phase.eq(1),
             ]
         with m.Else():
             with m.If(self.memaddr_2_lsb[1] != 0):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=self._memaddr_lsb_masked_to_z)
+                    m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR_LSB_MASKED)
             with m.Else():
                 m.d.comb += [
-                    self._pc_plus_4_to_z.eq(1),
+                    self.z_mux_select.eq(SeqMuxSelect.PC_PLUS_4),
                     self._z_reg_select.eq(InstrReg.RD),
                 ]
-                self.next_instr(m, NextPC.MEMADDR)
+                self.next_instr(m, NextPC.MEMADDR_NO_LSB)
 
     def handle_branch(self, m: Module):
         """Adds the BRANCH logic to the given module.
@@ -542,13 +506,13 @@ class SequencerROM(Elaboratable):
 
             with m.Else():
                 with m.If(self.branch_cond):
-                    m.d.comb += self._imm_to_y.eq(1)
+                    m.d.comb += self.y_mux_select.eq(SeqMuxSelect.IMM)
                 with m.Else():
                     m.d.comb += self._shamt.eq(4)
-                    m.d.comb += self._shamt_to_y.eq(1)
+                    m.d.comb += self.y_mux_select.eq(SeqMuxSelect.SHAMT)
 
                 m.d.comb += [
-                    self._pc_to_x.eq(1),
+                    self.x_mux_select.eq(SeqMuxSelect.PC),
                     self.alu_op_to_z.eq(AluOp.ADD),
                 ]
 
@@ -557,11 +521,11 @@ class SequencerROM(Elaboratable):
 
                 with m.Else():
                     m.d.comb += self._next_instr_phase.eq(2)
-                    m.d.comb += self._z_to_tmp.eq(1)
+                    m.d.comb += self.tmp_mux_select.eq(SeqMuxSelect.Z)
 
         with m.Else():
             self.set_exception(
-                m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=self._tmp_to_z)
+                m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.TMP)
 
     def handle_load(self, m: Module):
         """Adds the LOAD logic to the given module.
@@ -634,9 +598,9 @@ class SequencerROM(Elaboratable):
             m.d.comb += [
                 self.reg_to_x.eq(1),
                 self._x_reg_select.eq(InstrReg.RS1),
-                self._imm_to_y.eq(1),
+                self.y_mux_select.eq(SeqMuxSelect.IMM),
                 self.alu_op_to_z.eq(AluOp.ADD),
-                self._z_to_memaddr.eq(1),
+                self.memaddr_mux_select.eq(SeqMuxSelect.Z),
                 self._next_instr_phase.eq(1),
             ]
 
@@ -645,12 +609,12 @@ class SequencerROM(Elaboratable):
             with m.If(self._funct3.matches(MemAccessWidth.H, MemAccessWidth.HU) &
                       self.memaddr_2_lsb[0]):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
 
             with m.Elif((self._funct3 == MemAccessWidth.W) &
                         (self.memaddr_2_lsb != 0)):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
 
             with m.Elif(~self._funct3.matches(MemAccessWidth.B, MemAccessWidth.BU,
                                               MemAccessWidth.H, MemAccessWidth.HU,
@@ -660,8 +624,8 @@ class SequencerROM(Elaboratable):
             with m.Else():
                 m.d.comb += [
                     self.mem_rd.eq(1),
-                    self._memdata_to_x.eq(1),
-                    self._shamt_to_y.eq(1),
+                    self.x_mux_select.eq(SeqMuxSelect.MEMDATA_RD),
+                    self.y_mux_select.eq(SeqMuxSelect.SHAMT),
                     self.alu_op_to_z.eq(AluOp.SLL),
                     self._z_reg_select.eq(InstrReg.RD),
                     self._next_instr_phase.eq(2),
@@ -694,7 +658,7 @@ class SequencerROM(Elaboratable):
             m.d.comb += [
                 self.reg_to_x.eq(1),
                 self._x_reg_select.eq(InstrReg.RD),
-                self._shamt_to_y.eq(1),
+                self.y_mux_select.eq(SeqMuxSelect.SHAMT),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
 
@@ -757,9 +721,9 @@ class SequencerROM(Elaboratable):
             m.d.comb += [
                 self.reg_to_x.eq(1),
                 self._x_reg_select.eq(InstrReg.RS1),
-                self._imm_to_y.eq(1),
+                self.y_mux_select.eq(SeqMuxSelect.IMM),
                 self.alu_op_to_z.eq(AluOp.ADD),
-                self._z_to_memaddr.eq(1),
+                self.memaddr_mux_select.eq(SeqMuxSelect.Z),
                 self._next_instr_phase.eq(1),
             ]
 
@@ -767,11 +731,11 @@ class SequencerROM(Elaboratable):
             # Check for exception conditions first
             with m.If((self._funct3 == MemAccessWidth.H) & self.memaddr_2_lsb[0]):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
 
             with m.Elif((self._funct3 == MemAccessWidth.W) & (self.memaddr_2_lsb != 0)):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=self._memaddr_to_z)
+                    m, TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
 
             with m.Elif(~self._funct3.matches(MemAccessWidth.B,
                                               MemAccessWidth.H,
@@ -782,9 +746,9 @@ class SequencerROM(Elaboratable):
                 m.d.comb += [
                     self.reg_to_x.eq(1),
                     self._x_reg_select.eq(InstrReg.RS2),
-                    self._shamt_to_y.eq(1),
+                    self.y_mux_select.eq(SeqMuxSelect.SHAMT),
                     self.alu_op_to_z.eq(AluOp.SLL),
-                    self._z_to_memdata.eq(1),
+                    self.memdata_wr_mux_select.eq(SeqMuxSelect.Z),
                     self._next_instr_phase.eq(2),
                 ]
 
@@ -893,13 +857,13 @@ class SequencerROM(Elaboratable):
                 self.reg_to_y.eq(1),
                 self.alu_op_to_z.eq(AluOp.Y),
                 self.z_to_csr.eq(1),
-                self._x_to_tmp.eq(1),
+                self.tmp_mux_select.eq(SeqMuxSelect.X),
                 self._next_instr_phase.eq(1),
             ]
 
         with m.Else():
             m.d.comb += [
-                self._tmp_to_z.eq(1),
+                self.z_mux_select.eq(SeqMuxSelect.TMP),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
             self.next_instr(m)
@@ -918,16 +882,16 @@ class SequencerROM(Elaboratable):
                     self.csr_to_x.eq(1)
                 ]
             m.d.comb += [
-                self._imm_to_y.eq(1),
+                self.y_mux_select.eq(SeqMuxSelect.IMM),
                 self.alu_op_to_z.eq(AluOp.Y),
                 self.z_to_csr.eq(1),
-                self._x_to_tmp.eq(1),
+                self.tmp_mux_select.eq(SeqMuxSelect.X),
                 self._next_instr_phase.eq(1),
             ]
 
         with m.Else():
             m.d.comb += [
-                self._tmp_to_z.eq(1),
+                self.z_mux_select.eq(SeqMuxSelect.TMP),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
             self.next_instr(m)
@@ -942,13 +906,13 @@ class SequencerROM(Elaboratable):
                 self.reg_to_y.eq(1),
                 self.alu_op_to_z.eq(AluOp.OR),
                 self.z_to_csr.eq(~self.rs1_0),
-                self._x_to_tmp.eq(1),
+                self.tmp_mux_select.eq(SeqMuxSelect.X),
                 self._next_instr_phase.eq(1),
             ]
 
         with m.Else():
             m.d.comb += [
-                self._tmp_to_z.eq(1),
+                self.z_mux_select.eq(SeqMuxSelect.TMP),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
             self.next_instr(m)
@@ -959,16 +923,16 @@ class SequencerROM(Elaboratable):
         with m.If(self._instr_phase == 0):
             m.d.comb += [
                 self.csr_to_x.eq(1),
-                self._imm_to_y.eq(1),
+                self.y_mux_select.eq(SeqMuxSelect.IMM),
                 self.alu_op_to_z.eq(AluOp.OR),
                 self.z_to_csr.eq(~self.imm0),
-                self._x_to_tmp.eq(1),
+                self.tmp_mux_select.eq(SeqMuxSelect.X),
                 self._next_instr_phase.eq(1),
             ]
 
         with m.Else():
             m.d.comb += [
-                self._tmp_to_z.eq(1),
+                self.z_mux_select.eq(SeqMuxSelect.TMP),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
             self.next_instr(m)
@@ -983,13 +947,13 @@ class SequencerROM(Elaboratable):
                 self.reg_to_y.eq(1),
                 self.alu_op_to_z.eq(AluOp.AND_NOT),
                 self.z_to_csr.eq(~self.rs1_0),
-                self._x_to_tmp.eq(1),
+                self.tmp_mux_select.eq(SeqMuxSelect.X),
                 self._next_instr_phase.eq(1),
             ]
 
         with m.Else():
             m.d.comb += [
-                self._tmp_to_z.eq(1),
+                self.z_mux_select.eq(SeqMuxSelect.TMP),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
             self.next_instr(m)
@@ -1000,16 +964,16 @@ class SequencerROM(Elaboratable):
         with m.If(self._instr_phase == 0):
             m.d.comb += [
                 self.csr_to_x.eq(1),
-                self._imm_to_y.eq(1),
+                self.y_mux_select.eq(SeqMuxSelect.IMM),
                 self.alu_op_to_z.eq(AluOp.AND_NOT),
                 self.z_to_csr.eq(~self.imm0),
-                self._x_to_tmp.eq(1),
+                self.tmp_mux_select.eq(SeqMuxSelect.X),
                 self._next_instr_phase.eq(1),
             ]
 
         with m.Else():
             m.d.comb += [
-                self._tmp_to_z.eq(1),
+                self.z_mux_select.eq(SeqMuxSelect.TMP),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
             self.next_instr(m)
@@ -1032,7 +996,7 @@ class SequencerROM(Elaboratable):
         so we have no choice but to disable interrupts for an ECALL.
         """
         self.set_exception(
-            m, TrapCauseSelect.EXC_ECALL_FROM_MACH_MODE, mtval=self._pc_to_z, fatal=False)
+            m, TrapCauseSelect.EXC_ECALL_FROM_MACH_MODE, mtval=SeqMuxSelect.PC, fatal=False)
 
     def handle_EBREAK(self, m: Module):
         """Handles the EBREAK instruction.
@@ -1044,4 +1008,4 @@ class SequencerROM(Elaboratable):
         so we have no choice but to disable interrupts for an EBREAK.
         """
         self.set_exception(
-            m, TrapCauseSelect.EXC_BREAKPOINT, mtval=self._pc_to_z, fatal=False)
+            m, TrapCauseSelect.EXC_BREAKPOINT, mtval=SeqMuxSelect.PC, fatal=False)
