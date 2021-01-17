@@ -206,6 +206,24 @@ class TrapCauseSelect(IntEnum):
 
 
 @unique
+class ConstSelect(IntEnum):
+    """Selectors for consts."""
+    EXC_INSTR_ADDR_MISALIGN = 0      # 0x00000000
+    EXC_ILLEGAL_INSTR = 1            # 0x00000002
+    EXC_BREAKPOINT = 2               # 0x00000003
+    EXC_LOAD_ADDR_MISALIGN = 3       # 0x00000004
+    EXC_STORE_AMO_ADDR_MISALIGN = 4  # 0x00000006
+    EXC_ECALL_FROM_MACH_MODE = 5     # 0x0000000B
+    INT_MACH_EXTERNAL = 6            # 0x8000000B
+    INT_MACH_TIMER = 7               # 0x80000007
+    SHAMT_0 = 8                      # 0x00000000
+    SHAMT_4 = 9                      # 0x00000004
+    SHAMT_8 = 10                     # 0x00000008
+    SHAMT_16 = 11                    # 0x00000010
+    SHAMT_24 = 12                    # 0x00000018
+
+
+@unique
 class CSRAddr(IntEnum):
     """CSR addresses."""
     MSTATUS = 0x300
@@ -279,4 +297,4 @@ class SeqMuxSelect(IntEnum):
     Y = 12
     Z = 13
     Z_LSL2 = 14
-    SHAMT = 15
+    CONST = 15

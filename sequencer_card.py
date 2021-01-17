@@ -12,7 +12,7 @@ from nmigen.asserts import Assert, Assume, Cover, Stable, Past
 from consts import AluOp, AluFunc, BranchCond, CSRAddr, MemAccessWidth
 from consts import Opcode, OpcodeFormat, SystemFunc, TrapCause, PrivFunc
 from consts import InstrReg, OpcodeSelect, TrapCauseSelect
-from consts import NextPC, Instr, SeqMuxSelect
+from consts import NextPC, Instr, SeqMuxSelect, ConstSelect
 from transparent_latch import TransparentLatch
 from util import main, all_true
 from IC_7416244 import IC_mux32
@@ -171,10 +171,11 @@ class SequencerCard(Elaboratable):
         self._y_reg_select = Signal(InstrReg)
         self._z_reg_select = Signal(InstrReg)
 
+        self._const = Signal(ConstSelect)
+
         # -> X
         self.reg_to_x = Signal()
         self.x_mux_select = Signal(SeqMuxSelect)
-        self._trapcause_to_x = Signal()
 
         # -> Y
         self.reg_to_y = Signal()
@@ -265,7 +266,6 @@ class SequencerCard(Elaboratable):
             ~self.state.trap & ~self.instr_misalign & ~self.bad_instr)
 
         self.encode_opcode_select(m)
-        self.encode_trapcause(m)
         self.connect_roms(m)
         self.process(m)
         self.updates(m)
@@ -344,9 +344,9 @@ class SequencerCard(Elaboratable):
 
             # -> X
             self.reg_to_x.eq(self.rom.reg_to_x),
-            self.x_mux_select.eq(self.rom.x_mux_select),
-            self._trapcause_to_x.eq(
-                self.rom._trapcause_to_x | self.trap_rom._trapcause_to_x),
+            self.x_mux_select.eq(Mux(self.rom.x_mux_select == SeqMuxSelect.X,
+                                     self.trap_rom.x_mux_select, self.rom.x_mux_select)),
+            self._const.eq(self.rom._const | self.trap_rom._const),
 
             # -> Y
             self.reg_to_y.eq(self.rom.reg_to_y),
@@ -379,12 +379,7 @@ class SequencerCard(Elaboratable):
             # -> memdata
             self.memdata_wr_mux_select.eq(self.rom.memdata_wr_mux_select),
 
-            # memory load shamt
-            self._shamt.eq(self.rom._shamt),
-
             # -> various CSRs
-            self._trapcause_select.eq(
-                self.rom._trapcause_select | self.trap_rom._trapcause_select),
             self.clear_pend_mti.eq(
                 self.rom.clear_pend_mti | self.trap_rom.clear_pend_mti),
             self.clear_pend_mei.eq(
@@ -463,30 +458,44 @@ class SequencerCard(Elaboratable):
                 with m.Else():
                     m.d.comb += self.opcode_select.eq(OpcodeSelect.CSRS)
 
-    def encode_trapcause(self, m: Module):
-        with m.Switch(self._trapcause_select):
-            with m.Case(TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN):
-                m.d.comb += self._trapcause.eq(
+    def decode_const(self, m: Module):
+        const_sig = Signal(32)
+
+        with m.Switch(self._const):
+            with m.Case(ConstSelect.EXC_INSTR_ADDR_MISALIGN):
+                m.d.comb += const_sig.eq(
                     TrapCause.EXC_INSTR_ADDR_MISALIGN)
-            with m.Case(TrapCauseSelect.EXC_ILLEGAL_INSTR):
-                m.d.comb += self._trapcause.eq(TrapCause.EXC_ILLEGAL_INSTR)
-            with m.Case(TrapCauseSelect.EXC_BREAKPOINT):
-                m.d.comb += self._trapcause.eq(TrapCause.EXC_BREAKPOINT)
-            with m.Case(TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN):
-                m.d.comb += self._trapcause.eq(
+            with m.Case(ConstSelect.EXC_ILLEGAL_INSTR):
+                m.d.comb += const_sig.eq(TrapCause.EXC_ILLEGAL_INSTR)
+            with m.Case(ConstSelect.EXC_BREAKPOINT):
+                m.d.comb += const_sig.eq(TrapCause.EXC_BREAKPOINT)
+            with m.Case(ConstSelect.EXC_LOAD_ADDR_MISALIGN):
+                m.d.comb += const_sig.eq(
                     TrapCause.EXC_LOAD_ADDR_MISALIGN)
-            with m.Case(TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN):
-                m.d.comb += self._trapcause.eq(
+            with m.Case(ConstSelect.EXC_STORE_AMO_ADDR_MISALIGN):
+                m.d.comb += const_sig.eq(
                     TrapCause.EXC_STORE_AMO_ADDR_MISALIGN)
-            with m.Case(TrapCauseSelect.EXC_ECALL_FROM_MACH_MODE):
-                m.d.comb += self._trapcause.eq(
+            with m.Case(ConstSelect.EXC_ECALL_FROM_MACH_MODE):
+                m.d.comb += const_sig.eq(
                     TrapCause.EXC_ECALL_FROM_MACH_MODE)
-            with m.Case(TrapCauseSelect.INT_MACH_EXTERNAL):
-                m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_EXTERNAL)
-            with m.Case(TrapCauseSelect.INT_MACH_TIMER):
-                m.d.comb += self._trapcause.eq(TrapCause.INT_MACH_TIMER)
+            with m.Case(ConstSelect.INT_MACH_EXTERNAL):
+                m.d.comb += const_sig.eq(TrapCause.INT_MACH_EXTERNAL)
+            with m.Case(ConstSelect.INT_MACH_TIMER):
+                m.d.comb += const_sig.eq(TrapCause.INT_MACH_TIMER)
+            with m.Case(ConstSelect.SHAMT_0):
+                m.d.comb += const_sig.eq(0)
+            with m.Case(ConstSelect.SHAMT_4):
+                m.d.comb += const_sig.eq(4)
+            with m.Case(ConstSelect.SHAMT_8):
+                m.d.comb += const_sig.eq(8)
+            with m.Case(ConstSelect.SHAMT_16):
+                m.d.comb += const_sig.eq(16)
+            with m.Case(ConstSelect.SHAMT_24):
+                m.d.comb += const_sig.eq(24)
             with m.Default():
-                m.d.comb += self._trapcause.eq(0)
+                m.d.comb += const_sig.eq(0)
+
+        return const_sig
 
     def updates(self, m: Module):
         read_pulse = ClockSignal("ph1") & ~ClockSignal("ph2")
@@ -649,8 +658,8 @@ class SequencerCard(Elaboratable):
                 m.d[clk] += sig.eq(self.data_z_in)
             with m.Case(SeqMuxSelect.Z_LSL2):
                 m.d[clk] += sig.eq(self.data_z_in << 2)
-            with m.Case(SeqMuxSelect.SHAMT):
-                m.d[clk] += sig.eq(self._shamt)
+            with m.Case(SeqMuxSelect.CONST):
+                m.d[clk] += sig.eq(self.decode_const(m))
 
     def multiplex_to_pc(self, m: Module):
         self.multiplex_to(m, self.state._pc, self.pc_mux_select, clk="ph1")
@@ -727,9 +736,7 @@ class SequencerCard(Elaboratable):
         #                       ])
 
     def multiplex_to_x(self, m: Module):
-        with m.If(self._trapcause_to_x):
-            m.d.comb += self.data_x_out.eq(self._trapcause)
-        with m.Elif(self.csr_to_x):
+        with m.If(self.csr_to_x):
             with m.Switch(self.csr_num):
                 with m.Case(CSRAddr.MTVEC):
                     m.d.comb += self.data_x_out.eq(self.state._mtvec)

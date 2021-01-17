@@ -8,7 +8,7 @@ from nmigen.build import Platform
 from consts import AluOp, AluFunc, BranchCond, MemAccessWidth
 from consts import OpcodeFormat, SystemFunc, TrapCauseSelect
 from consts import InstrReg, OpcodeSelect
-from consts import NextPC, SeqMuxSelect
+from consts import NextPC, SeqMuxSelect, ConstSelect
 
 
 class SequencerROM(Elaboratable):
@@ -70,7 +70,6 @@ class SequencerROM(Elaboratable):
         # -> X
         self.x_mux_select = Signal(SeqMuxSelect)
         self.reg_to_x = Signal()
-        self._trapcause_to_x = Signal()
 
         # -> Y
         self.y_mux_select = Signal(SeqMuxSelect)
@@ -97,14 +96,9 @@ class SequencerROM(Elaboratable):
         # -> memdata
         self.memdata_wr_mux_select = Signal(SeqMuxSelect)
 
-        # memory load shamt
-        # There's not a lot of point in multiplexing this, since
-        # there are 5 possible values, requiring 3 bits instead of
-        # 5. Not much of a savings.
-        self._shamt = Signal(5)  # select: 4 bits
+        self._const = Signal(ConstSelect)  # select: 4 bits
 
         # -> various CSRs
-        self._trapcause_select = Signal(TrapCauseSelect)  # 4 bits
         self.clear_pend_mti = Signal()
         self.clear_pend_mei = Signal()
 
@@ -125,15 +119,12 @@ class SequencerROM(Elaboratable):
         # Defaults
         m.d.comb += [
             self._next_instr_phase.eq(0),
-            self._trapcause_select.eq(TrapCauseSelect.NONE),
             self.reg_to_x.eq(0),
-            self._trapcause_to_x.eq(0),
             self.reg_to_y.eq(0),
             self.alu_op_to_z.eq(AluOp.NONE),
             self.mem_rd.eq(0),
             self.mem_wr.eq(0),
             self.mem_wr_mask.eq(0),
-            self._shamt.eq(0),
             self.csr_to_x.eq(0),
             self.z_to_csr.eq(0),
             self._funct12_to_csr_num.eq(0),
@@ -155,6 +146,7 @@ class SequencerROM(Elaboratable):
             self.x_mux_select.eq(SeqMuxSelect.X),
             self.y_mux_select.eq(SeqMuxSelect.Y),
             self.z_mux_select.eq(SeqMuxSelect.Z),
+            self._const.eq(0),
         ]
 
         m.d.comb += [
@@ -234,14 +226,13 @@ class SequencerROM(Elaboratable):
             m.d.comb += self.pc_mux_select.eq(SeqMuxSelect.X)
             m.d.comb += self.memaddr_mux_select.eq(SeqMuxSelect.X)
 
-    def set_exception(self, m: Module, exc: TrapCauseSelect, mtval: SeqMuxSelect, fatal: bool = True):
+    def set_exception(self, m: Module, exc: ConstSelect, mtval: SeqMuxSelect, fatal: bool = True):
         m.d.comb += self.load_exception.eq(1)
         m.d.comb += self.next_exception.eq(1)
         m.d.comb += self.next_fatal.eq(1 if fatal else 0)
 
-        m.d.comb += self._trapcause_select.eq(exc)
-        m.d.comb += self._trapcause_to_x.eq(1)
-
+        m.d.comb += self._const.eq(exc)
+        m.d.comb += self.x_mux_select.eq(SeqMuxSelect.CONST)
         m.d.comb += self.z_mux_select.eq(mtval)
 
         if fatal:
@@ -256,7 +247,7 @@ class SequencerROM(Elaboratable):
         m.d.comb += self._next_instr_phase.eq(0)
 
     def handle_illegal_instr(self, m: Module):
-        self.set_exception(m, TrapCauseSelect.EXC_ILLEGAL_INSTR,
+        self.set_exception(m, ConstSelect.EXC_ILLEGAL_INSTR,
                            mtval=SeqMuxSelect.INSTR)
 
     def handle_lui(self, m: Module):
@@ -425,7 +416,7 @@ class SequencerROM(Elaboratable):
         with m.Else():
             with m.If(self.memaddr_2_lsb[1] != 0):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
+                    m, ConstSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
             with m.Else():
                 m.d.comb += [
                     self.z_mux_select.eq(SeqMuxSelect.PC_PLUS_4),
@@ -459,7 +450,7 @@ class SequencerROM(Elaboratable):
         with m.Else():
             with m.If(self.memaddr_2_lsb[1] != 0):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR_LSB_MASKED)
+                    m, ConstSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR_LSB_MASKED)
             with m.Else():
                 m.d.comb += [
                     self.z_mux_select.eq(SeqMuxSelect.PC_PLUS_4),
@@ -508,8 +499,8 @@ class SequencerROM(Elaboratable):
                 with m.If(self.branch_cond):
                     m.d.comb += self.y_mux_select.eq(SeqMuxSelect.IMM)
                 with m.Else():
-                    m.d.comb += self._shamt.eq(4)
-                    m.d.comb += self.y_mux_select.eq(SeqMuxSelect.SHAMT)
+                    m.d.comb += self._const.eq(ConstSelect.SHAMT_4)
+                    m.d.comb += self.y_mux_select.eq(SeqMuxSelect.CONST)
 
                 m.d.comb += [
                     self.x_mux_select.eq(SeqMuxSelect.PC),
@@ -525,7 +516,7 @@ class SequencerROM(Elaboratable):
 
         with m.Else():
             self.set_exception(
-                m, TrapCauseSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.TMP)
+                m, ConstSelect.EXC_INSTR_ADDR_MISALIGN, mtval=SeqMuxSelect.TMP)
 
     def handle_load(self, m: Module):
         """Adds the LOAD logic to the given module.
@@ -609,12 +600,12 @@ class SequencerROM(Elaboratable):
             with m.If(self._funct3.matches(MemAccessWidth.H, MemAccessWidth.HU) &
                       self.memaddr_2_lsb[0]):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
+                    m, ConstSelect.EXC_LOAD_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
 
             with m.Elif((self._funct3 == MemAccessWidth.W) &
                         (self.memaddr_2_lsb != 0)):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_LOAD_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
+                    m, ConstSelect.EXC_LOAD_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
 
             with m.Elif(~self._funct3.matches(MemAccessWidth.B, MemAccessWidth.BU,
                                               MemAccessWidth.H, MemAccessWidth.HU,
@@ -625,7 +616,7 @@ class SequencerROM(Elaboratable):
                 m.d.comb += [
                     self.mem_rd.eq(1),
                     self.x_mux_select.eq(SeqMuxSelect.MEMDATA_RD),
-                    self.y_mux_select.eq(SeqMuxSelect.SHAMT),
+                    self.y_mux_select.eq(SeqMuxSelect.CONST),
                     self.alu_op_to_z.eq(AluOp.SLL),
                     self._z_reg_select.eq(InstrReg.RD),
                     self._next_instr_phase.eq(2),
@@ -636,56 +627,59 @@ class SequencerROM(Elaboratable):
                     with m.Case(MemAccessWidth.B, MemAccessWidth.BU):
                         with m.Switch(self.memaddr_2_lsb):
                             with m.Case(0):
-                                m.d.comb += self._shamt.eq(24)
+                                m.d.comb += self._const.eq(
+                                    ConstSelect.SHAMT_24)
                             with m.Case(1):
-                                m.d.comb += self._shamt.eq(16)
+                                m.d.comb += self._const.eq(
+                                    ConstSelect.SHAMT_16)
                             with m.Case(2):
-                                m.d.comb += self._shamt.eq(8)
+                                m.d.comb += self._const.eq(ConstSelect.SHAMT_8)
                             with m.Case(3):
-                                m.d.comb += self._shamt.eq(0)
+                                m.d.comb += self._const.eq(ConstSelect.SHAMT_0)
 
                     with m.Case(MemAccessWidth.H, MemAccessWidth.HU):
                         with m.Switch(self.memaddr_2_lsb):
                             with m.Case(0):
-                                m.d.comb += self._shamt.eq(16)
+                                m.d.comb += self._const.eq(
+                                    ConstSelect.SHAMT_16)
                             with m.Case(2):
-                                m.d.comb += self._shamt.eq(0)
+                                m.d.comb += self._const.eq(ConstSelect.SHAMT_0)
 
                     with m.Case(MemAccessWidth.W):
-                        m.d.comb += self._shamt.eq(0)
+                        m.d.comb += self._const.eq(ConstSelect.SHAMT_0)
 
         with m.Else():
             m.d.comb += [
                 self.reg_to_x.eq(1),
                 self._x_reg_select.eq(InstrReg.RD),
-                self.y_mux_select.eq(SeqMuxSelect.SHAMT),
+                self.y_mux_select.eq(SeqMuxSelect.CONST),
                 self._z_reg_select.eq(InstrReg.RD),
             ]
 
             with m.Switch(self._funct3):
                 with m.Case(MemAccessWidth.B):
                     m.d.comb += [
-                        self._shamt.eq(24),
+                        self._const.eq(ConstSelect.SHAMT_24),
                         self.alu_op_to_z.eq(AluOp.SRA),
                     ]
                 with m.Case(MemAccessWidth.BU):
                     m.d.comb += [
-                        self._shamt.eq(24),
+                        self._const.eq(ConstSelect.SHAMT_24),
                         self.alu_op_to_z.eq(AluOp.SRL),
                     ]
                 with m.Case(MemAccessWidth.H):
                     m.d.comb += [
-                        self._shamt.eq(16),
+                        self._const.eq(ConstSelect.SHAMT_16),
                         self.alu_op_to_z.eq(AluOp.SRA),
                     ]
                 with m.Case(MemAccessWidth.HU):
                     m.d.comb += [
-                        self._shamt.eq(16),
+                        self._const.eq(ConstSelect.SHAMT_16),
                         self.alu_op_to_z.eq(AluOp.SRL),
                     ]
                 with m.Case(MemAccessWidth.W):
                     m.d.comb += [
-                        self._shamt.eq(0),
+                        self._const.eq(ConstSelect.SHAMT_0),
                         self.alu_op_to_z.eq(AluOp.SRL),
                     ]
 
@@ -731,11 +725,11 @@ class SequencerROM(Elaboratable):
             # Check for exception conditions first
             with m.If((self._funct3 == MemAccessWidth.H) & self.memaddr_2_lsb[0]):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
+                    m, ConstSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
 
             with m.Elif((self._funct3 == MemAccessWidth.W) & (self.memaddr_2_lsb != 0)):
                 self.set_exception(
-                    m, TrapCauseSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
+                    m, ConstSelect.EXC_STORE_AMO_ADDR_MISALIGN, mtval=SeqMuxSelect.MEMADDR)
 
             with m.Elif(~self._funct3.matches(MemAccessWidth.B,
                                               MemAccessWidth.H,
@@ -746,7 +740,7 @@ class SequencerROM(Elaboratable):
                 m.d.comb += [
                     self.reg_to_x.eq(1),
                     self._x_reg_select.eq(InstrReg.RS2),
-                    self.y_mux_select.eq(SeqMuxSelect.SHAMT),
+                    self.y_mux_select.eq(SeqMuxSelect.CONST),
                     self.alu_op_to_z.eq(AluOp.SLL),
                     self.memdata_wr_mux_select.eq(SeqMuxSelect.Z),
                     self._next_instr_phase.eq(2),
@@ -757,23 +751,26 @@ class SequencerROM(Elaboratable):
                     with m.Case(MemAccessWidth.B):
                         with m.Switch(self.memaddr_2_lsb):
                             with m.Case(0):
-                                m.d.comb += self._shamt.eq(0)
+                                m.d.comb += self._const.eq(ConstSelect.SHAMT_0)
                             with m.Case(1):
-                                m.d.comb += self._shamt.eq(8)
+                                m.d.comb += self._const.eq(ConstSelect.SHAMT_8)
                             with m.Case(2):
-                                m.d.comb += self._shamt.eq(16)
+                                m.d.comb += self._const.eq(
+                                    ConstSelect.SHAMT_16)
                             with m.Case(3):
-                                m.d.comb += self._shamt.eq(24)
+                                m.d.comb += self._const.eq(
+                                    ConstSelect.SHAMT_24)
 
                     with m.Case(MemAccessWidth.H):
                         with m.Switch(self.memaddr_2_lsb):
                             with m.Case(0):
-                                m.d.comb += self._shamt.eq(0)
+                                m.d.comb += self._const.eq(ConstSelect.SHAMT_0)
                             with m.Case(2):
-                                m.d.comb += self._shamt.eq(16)
+                                m.d.comb += self._const.eq(
+                                    ConstSelect.SHAMT_16)
 
                     with m.Case(MemAccessWidth.W):
-                        m.d.comb += self._shamt.eq(0)
+                        m.d.comb += self._const.eq(ConstSelect.SHAMT_0)
 
         with m.Else():
             with m.Switch(self._funct3):
@@ -996,7 +993,7 @@ class SequencerROM(Elaboratable):
         so we have no choice but to disable interrupts for an ECALL.
         """
         self.set_exception(
-            m, TrapCauseSelect.EXC_ECALL_FROM_MACH_MODE, mtval=SeqMuxSelect.PC, fatal=False)
+            m, ConstSelect.EXC_ECALL_FROM_MACH_MODE, mtval=SeqMuxSelect.PC, fatal=False)
 
     def handle_EBREAK(self, m: Module):
         """Handles the EBREAK instruction.
@@ -1008,4 +1005,4 @@ class SequencerROM(Elaboratable):
         so we have no choice but to disable interrupts for an EBREAK.
         """
         self.set_exception(
-            m, TrapCauseSelect.EXC_BREAKPOINT, mtval=SeqMuxSelect.PC, fatal=False)
+            m, ConstSelect.EXC_BREAKPOINT, mtval=SeqMuxSelect.PC, fatal=False)
