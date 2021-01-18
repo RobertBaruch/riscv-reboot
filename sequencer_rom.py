@@ -41,7 +41,7 @@ class SequencerROM(Elaboratable):
         self._alu_func = Signal(4)
 
         ##############
-        # Outputs (77 bits total)
+        # Outputs (66 bits total)
         ##############
 
         # Raised on the last phase of an instruction.
@@ -51,7 +51,6 @@ class SequencerROM(Elaboratable):
         self.save_trap_csrs = Signal()
 
         # CSR lines
-        self.mtvec_mux_select = Signal(SeqMuxSelect)
         self.csr_to_x = Signal()
         self.z_to_csr = Signal()
 
@@ -98,10 +97,6 @@ class SequencerROM(Elaboratable):
 
         self._const = Signal(ConstSelect)  # select: 4 bits
 
-        # -> various CSRs
-        self.clear_pend_mti = Signal()
-        self.clear_pend_mei = Signal()
-
         self.enter_trap = Signal()
         self.exit_trap = Signal()
 
@@ -135,14 +130,11 @@ class SequencerROM(Elaboratable):
             self._z_reg_select.eq(0),
             self.enter_trap.eq(0),
             self.exit_trap.eq(0),
-            self.clear_pend_mti.eq(0),
-            self.clear_pend_mei.eq(0),
             self.save_trap_csrs.eq(0),
             self.pc_mux_select.eq(SeqMuxSelect.PC),
             self.memaddr_mux_select.eq(SeqMuxSelect.MEMADDR),
             self.memdata_wr_mux_select.eq(SeqMuxSelect.MEMDATA_WR),
             self.tmp_mux_select.eq(SeqMuxSelect.TMP),
-            self.mtvec_mux_select.eq(SeqMuxSelect.MTVEC),
             self.x_mux_select.eq(SeqMuxSelect.X),
             self.y_mux_select.eq(SeqMuxSelect.Y),
             self.z_mux_select.eq(SeqMuxSelect.Z),

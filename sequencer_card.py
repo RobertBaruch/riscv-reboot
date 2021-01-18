@@ -116,6 +116,7 @@ class SequencerCard(Elaboratable):
 
         # CSR lines
         self.csr_num = Signal(CSRAddr)
+        self.csr_num_is_mtvec = Signal()
         self.csr_to_x = Signal()
         self.z_to_csr = Signal()
 
@@ -195,6 +196,7 @@ class SequencerCard(Elaboratable):
         self._funct12_to_csr_num = Signal()
         self._mepc_num_to_csr_num = Signal()
         self._mcause_to_csr_num = Signal()
+        self.mtvec_mux_select = Signal(SeqMuxSelect)
 
         # -> memaddr
         self.memaddr_mux_select = Signal(SeqMuxSelect)
@@ -241,6 +243,9 @@ class SequencerCard(Elaboratable):
         m.d.comb += self.imm0.eq(self._imm == 0)
         m.d.comb += self.rd0.eq(self._rd == 0)
         m.d.comb += self.rs1_0.eq(self._rs1 == 0)
+        m.d.comb += self.csr_num_is_mtvec.eq(self.csr_num == CSRAddr.MTVEC)
+        m.d.comb += self.mtvec_mux_select.eq(Mux(self.z_to_csr & self.csr_num_is_mtvec,
+                                                 SeqMuxSelect.Z, SeqMuxSelect.MTVEC))
         # Only used on instruction phase 1 in BRANCH, which is why we can
         # register this on phase 1. Also, because it's an input to a ROM,
         # we have to ensure the signal is registered.
@@ -312,19 +317,21 @@ class SequencerCard(Elaboratable):
         # Outputs
         m.d.comb += [
             # Raised on the last phase of an instruction.
-            self.set_instr_complete.eq(
-                self.rom.set_instr_complete | self.trap_rom.set_instr_complete),
+            self.set_instr_complete.eq(Mux(self.enable_sequencer_rom,
+                                           self.rom.set_instr_complete, self.trap_rom.set_instr_complete)),
 
             # Raised when the exception card should store trap data.
-            self.save_trap_csrs.eq(
-                self.rom.save_trap_csrs | self.trap_rom.save_trap_csrs),
+            self.save_trap_csrs.eq(Mux(self.enable_sequencer_rom,
+                                       self.rom.save_trap_csrs, self.trap_rom.save_trap_csrs)),
 
             # CSR lines
-            self.csr_to_x.eq(self.rom.csr_to_x | self.trap_rom.csr_to_x),
+            self.csr_to_x.eq(Mux(self.enable_sequencer_rom,
+                                 self.rom.csr_to_x, self.trap_rom.csr_to_x)),
             self.z_to_csr.eq(self.rom.z_to_csr),
 
             # Memory
-            self.mem_rd.eq(self.rom.mem_rd | self.irq_load_rom.mem_rd),
+            self.mem_rd.eq(Mux(self.enable_sequencer_rom,
+                               self.rom.mem_rd, self.irq_load_rom.mem_rd)),
             self.mem_wr.eq(self.rom.mem_wr),
             # Bytes in memory word to write
             self.mem_wr_mask.eq(self.rom.mem_wr_mask),
@@ -335,8 +342,8 @@ class SequencerCard(Elaboratable):
             # (i.e. load_instr) on the latch is a register, so setting load_instr
             # now opens the transparent latch next.
             self._load_instr.eq(self.irq_load_rom._load_instr),
-            self._next_instr_phase.eq(
-                self.rom._next_instr_phase | self.trap_rom._next_instr_phase),
+            self._next_instr_phase.eq(Mux(self.enable_sequencer_rom,
+                                          self.rom._next_instr_phase, self.trap_rom._next_instr_phase)),
 
             self._x_reg_select.eq(self.rom._x_reg_select),
             self._y_reg_select.eq(self.rom._y_reg_select),
@@ -344,24 +351,26 @@ class SequencerCard(Elaboratable):
 
             # -> X
             self.reg_to_x.eq(self.rom.reg_to_x),
-            self.x_mux_select.eq(Mux(self.rom.x_mux_select == SeqMuxSelect.X,
-                                     self.trap_rom.x_mux_select, self.rom.x_mux_select)),
-            self._const.eq(self.rom._const | self.trap_rom._const),
+            self.x_mux_select.eq(Mux(self.csr_to_x & self.csr_num_is_mtvec, SeqMuxSelect.MTVEC,
+                                     Mux(self.enable_sequencer_rom,
+                                         self.rom.x_mux_select, self.trap_rom.x_mux_select))),
+            self._const.eq(Mux(self.enable_sequencer_rom,
+                               self.rom._const, self.trap_rom._const)),
 
             # -> Y
             self.reg_to_y.eq(self.rom.reg_to_y),
-            self.y_mux_select.eq(Mux(self.rom.y_mux_select == SeqMuxSelect.Y,
-                                     self.trap_rom.y_mux_select, self.rom.y_mux_select)),
+            self.y_mux_select.eq(Mux(self.enable_sequencer_rom,
+                                     self.rom.y_mux_select, self.trap_rom.y_mux_select)),
 
             # -> Z
-            self.z_mux_select.eq(Mux(self.rom.z_mux_select == SeqMuxSelect.Z,
-                                     self.trap_rom.z_mux_select, self.rom.z_mux_select)),
-            self.alu_op_to_z.eq(self.rom.alu_op_to_z |
-                                self.trap_rom.alu_op_to_z),
+            self.z_mux_select.eq(Mux(self.enable_sequencer_rom,
+                                     self.rom.z_mux_select, self.trap_rom.z_mux_select)),
+            self.alu_op_to_z.eq(Mux(self.enable_sequencer_rom, self.rom.alu_op_to_z,
+                                    self.trap_rom.alu_op_to_z)),
 
             # -> PC
-            self.pc_mux_select.eq(Mux(self.rom.pc_mux_select == SeqMuxSelect.PC,
-                                      self.trap_rom.pc_mux_select, self.rom.pc_mux_select)),
+            self.pc_mux_select.eq(Mux(self.enable_sequencer_rom,
+                                      self.rom.pc_mux_select, self.trap_rom.pc_mux_select)),
 
             # -> tmp
             self.tmp_mux_select.eq(self.rom.tmp_mux_select),
@@ -369,21 +378,19 @@ class SequencerCard(Elaboratable):
             # -> csr_num
             self._funct12_to_csr_num.eq(self.rom._funct12_to_csr_num),
             self._mepc_num_to_csr_num.eq(self.rom._mepc_num_to_csr_num),
-            self._mcause_to_csr_num.eq(
-                self.rom._mcause_to_csr_num | self.trap_rom._mcause_to_csr_num),
+            self._mcause_to_csr_num.eq(Mux(self.enable_sequencer_rom,
+                                           self.rom._mcause_to_csr_num, self.trap_rom._mcause_to_csr_num)),
 
             # -> memaddr
-            self.memaddr_mux_select.eq(Mux(self.rom.memaddr_mux_select == SeqMuxSelect.MEMADDR,
-                                           self.trap_rom.memaddr_mux_select, self.rom.memaddr_mux_select)),
+            self.memaddr_mux_select.eq(Mux(self.enable_sequencer_rom,
+                                           self.rom.memaddr_mux_select, self.trap_rom.memaddr_mux_select)),
 
             # -> memdata
             self.memdata_wr_mux_select.eq(self.rom.memdata_wr_mux_select),
 
             # -> various CSRs
-            self.clear_pend_mti.eq(
-                self.rom.clear_pend_mti | self.trap_rom.clear_pend_mti),
-            self.clear_pend_mei.eq(
-                self.rom.clear_pend_mei | self.trap_rom.clear_pend_mei),
+            self.clear_pend_mti.eq(self.trap_rom.clear_pend_mti),
+            self.clear_pend_mei.eq(self.trap_rom.clear_pend_mei),
 
             self.enter_trap.eq(self.rom.enter_trap | self.trap_rom.enter_trap),
             self.exit_trap.eq(self.rom.exit_trap | self.trap_rom.exit_trap),
@@ -615,16 +622,19 @@ class SequencerCard(Elaboratable):
             m.d.comb += mux.a[i].eq(sigs[i])
 
     def multiplex_to_csrs(self, m: Module):
-        with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MTVEC)):
-            m.d.ph2w += self.state._mtvec.eq(self.data_z_in)
+        self.multiplex_to(m, self.state._mtvec,
+                          self.mtvec_mux_select, clk="ph2w")
+        # with m.If(self.z_to_csr & (self.csr_num == CSRAddr.MTVEC)):
+        #     m.d.ph2w += self.state._mtvec.eq(self.data_z_in)
 
     def multiplex_to_csrs_chips(self, m: Module):
-        self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mtvec,
-                              sels=[
-                                  self.z_to_csr & (
-                                      self.csr_num == CSRAddr.MTVEC)
-                              ],
-                              sigs=[self.data_z_in])
+        self.multiplex_to_csrs(m)
+        # self.multiplex_to_reg(m, clk="ph2w", reg=self.state._mtvec,
+        #                       sels=[
+        #                           self.z_to_csr & (
+        #                               self.csr_num == CSRAddr.MTVEC)
+        #                       ],
+        #                       sigs=[self.data_z_in])
 
     def multiplex_to(self, m: Module, sig: Signal, sel: Signal, clk: str):
         with m.Switch(sel):
@@ -736,11 +746,11 @@ class SequencerCard(Elaboratable):
         #                       ])
 
     def multiplex_to_x(self, m: Module):
-        with m.If(self.csr_to_x):
-            with m.Switch(self.csr_num):
-                with m.Case(CSRAddr.MTVEC):
-                    m.d.comb += self.data_x_out.eq(self.state._mtvec)
-        with m.Elif(self.x_mux_select != SeqMuxSelect.X):
+        # with m.If(self.csr_to_x):
+        #     with m.Switch(self.csr_num):
+        #         with m.Case(CSRAddr.MTVEC):
+        #             m.d.comb += self.data_x_out.eq(self.state._mtvec)
+        with m.If(self.x_mux_select != SeqMuxSelect.X):
             self.multiplex_to(m, self.data_x_out,
                               self.x_mux_select, clk="comb")
 
