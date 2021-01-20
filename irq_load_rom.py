@@ -22,7 +22,7 @@ class IrqLoadInstrROM(Elaboratable):
 
         self.load_trap = Signal()
         self.next_trap = Signal()
-        self._load_instr = Signal()
+        self._load_instr = Signal(reset=1)
         self.mem_rd = Signal()
 
     def elaborate(self, _: Platform) -> Module:

@@ -1276,8 +1276,9 @@ class FormalCPU(Elaboratable):
         ph1 = ClockDomain("ph1")
         ph2 = ClockDomain("ph2")
         ph2w = ClockDomain("ph2w")
+        ph2r = ClockDomain("ph2r")
 
-        m.domains += [ph1, ph2, ph2w]
+        m.domains += [ph1, ph2, ph2w, ph2r]
 
         # Generate the ph1 and ph2 clocks.
         phase_count = Signal(3, reset=0, reset_less=True)
@@ -1300,6 +1301,7 @@ class FormalCPU(Elaboratable):
                 m.d.comb += ph2.clk.eq(1)
 
         m.d.comb += ph2w.clk.eq(phase_count != 4)
+        m.d.comb += ph2r.clk.eq(phase_count != 0)
 
         m.d.comb += mcycle_end.eq(phase_count == 5)
 

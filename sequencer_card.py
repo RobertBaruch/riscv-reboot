@@ -505,15 +505,8 @@ class SequencerCard(Elaboratable):
         return const_sig
 
     def updates(self, m: Module):
-        read_pulse = ClockSignal("ph1") & ~ClockSignal("ph2")
-        latch_instr = Signal()
-        m.d.comb += [
-            latch_instr.eq(read_pulse & self._load_instr),
-            self.state._instr.eq(self._instr_latch.data_out),
-            self._instr_latch.data_in.eq(self.memdata_rd),
-            self._instr_latch.n_oe.eq(0),
-            self._instr_latch.le.eq(latch_instr),
-        ]
+        with m.If(self._load_instr):
+            m.d.ph2r += self.state._instr.eq(self.memdata_rd)
 
         m.d.ph1 += self.state._instr_phase.eq(self._next_instr_phase)
         m.d.ph1 += self.state.reg_page.eq(self._next_reg_page)
@@ -569,8 +562,11 @@ class SequencerCard(Elaboratable):
         else:
             self.decode_imm(m)
 
-        m.d.comb += self.bad_instr.eq((self.state._instr[:16] == 0) |
-                                      (self.state._instr == 0xFFFFFFFF))
+        # We don't evaluate the instruction for badness until after it's loaded.
+        ph2r_clk = ClockSignal("ph2r")
+        m.d.comb += self.bad_instr.eq(ph2r_clk & (
+            (self.state._instr[:16] == 0) |
+            (self.state._instr == 0xFFFFFFFF)))
 
         with m.Switch(self._funct3):
             with m.Case(BranchCond.EQ):
