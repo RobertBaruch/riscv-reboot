@@ -39,15 +39,23 @@ def main(cls, filename="toplevel.il"):
         sby -f <file.sby>.
     """
 
-    if len(sys.argv) < 2 or (sys.argv[1] != "sim" and sys.argv[1] != "gen"):
-        print(f"Usage: python {sys.argv[0]} sim|gen")
+    if len(sys.argv) < 2 or (sys.argv[1] != "sim" and sys.argv[1] != "gen" and sys.argv[1] != "rtl"):
+        print(f"Usage: python {sys.argv[0]} sim|gen|rtl")
         sys.exit(1)
 
     if sys.argv[1] == "sim":
         cls.sim()
+        return
+
+    design = None
+    ports = []
+
+    if sys.argv[1] == "rtl":
+        design, ports = cls.toRTL()
     else:
         design, ports = cls.formal()
-        fragment = Fragment.get(design, None)
-        output = rtlil.convert(fragment, ports=ports)
-        with open(filename, "w") as f:
-            f.write(output)
+
+    fragment = Fragment.get(design, None)
+    output = rtlil.convert(fragment, ports=ports)
+    with open(filename, "w") as f:
+        f.write(output)
