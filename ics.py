@@ -328,6 +328,13 @@ class IC_74181(Elaboratable):
         m.submodules += [m1, m2]
         return m, ports1 + ports2
 
+    @classmethod
+    def toRTL(cls) -> Tuple[Module, List[Signal]]:
+        m = Module()
+        m.submodules.chip = chip = cls()
+
+        return m, [chip.a, chip.b, chip.s, chip.f, chip.m, chip.n_carryin, chip.n_carryout, chip.x, chip.y, chip.a_eq_b]
+
 
 class IC_74182_active_low(Elaboratable):
     """Logic for the active low 74182 4-bit carry look-ahead unit.
@@ -549,5 +556,190 @@ class IC_74182_active_high(Elaboratable):
         return m, clu.ports() + alu.ports()
 
 
+class IC_74181_and_or_layer1(Elaboratable):
+    """Logic for the first and-or layer of the 74181 4-bit ALU.
+    """
+
+    def __init__(self):
+        self.a = Signal(4)
+        self.b = Signal(4)
+        self.s = Signal(4)
+        self.x = Signal(8)
+        self.m = Signal()
+        self.n_carryin = Signal()
+
+    def ports(self):
+        return [self.a, self.b, self.s, self.x, self.m, self.n_carryin]
+
+    def elaborate(self, _: Platform) -> Module:
+        """Implements the logic of the 74181 chip.
+
+        The logic is from the logic diagram in the data
+        sheet, so that we're not fooled by any quirks.
+        """
+        m = Module()
+        a = self.a
+        b = self.b
+        s = self.s
+        x = self.x
+
+        for i in range(4):
+            ab_a0 = a[i]
+            ab_a1 = b[i] & s[0]
+            ab_a2 = ~b[i] & s[1]
+            m.d.comb += x[2*i].eq(~(ab_a0 | ab_a1 | ab_a2))
+
+            ab_b0 = a[i] & ~b[i] & s[2]
+            ab_b1 = a[i] & b[i] & s[3]
+            m.d.comb += x[2*i+1].eq(~(ab_b0 | ab_b1))
+
+        return m
+
+    @classmethod
+    def toRTL(cls) -> Tuple[Module, List[Signal]]:
+        m = Module()
+        m.submodules.chip = chip = cls()
+
+        return m, chip.ports()
+
+
+class IC_74181_and_or_layer2(Elaboratable):
+    """Logic for the second and-or layer of the 74181 4-bit ALU.
+    """
+
+    def __init__(self):
+        self.x = Signal(8)
+        self.m = Signal()
+        self.n_carryin = Signal()
+        self.n = Signal(7)
+
+    def ports(self):
+        return [self.x, self.m, self.n_carryin, self.n]
+
+    def elaborate(self, _: Platform) -> Module:
+        """Implements the logic of the 74181 chip.
+
+        The logic is from the logic diagram in the data
+        sheet, so that we're not fooled by any quirks.
+        """
+        m = Module()
+        n_cin = self.n_carryin
+        arith = ~self.m
+        x = self.x
+        n = self.n
+
+        x0 = x[0]
+        x1 = x[1]
+        x2 = x[2]
+        x3 = x[3]
+        x4 = x[4]
+        x5 = x[5]
+        x6 = x[6]
+        x7 = x[7]
+
+        # Next set of intermediate signals.
+
+        m.d.comb += n[0].eq(~(arith & n_cin))
+
+        y2a = arith & x0
+        y2b = arith & x1 & n_cin
+        m.d.comb += n[1].eq(~(y2a | y2b))
+
+        y4a = arith & x2
+        y4b = arith & x0 & x3
+        y4c = arith & x1 & x3 & n_cin
+        m.d.comb += n[2].eq(~(y4a | y4b | y4c))
+
+        y6a = arith & x4
+        y6b = arith & x2 & x5
+        y6c = arith & x0 & x3 & x5
+        y6d = arith & x1 & x3 & x5 & n_cin
+        m.d.comb += n[3].eq(~(y6a | y6b | y6c | y6d))
+
+        m.d.comb += n[4].eq(~(x1 & x3 & x5 & x7 & n_cin))
+
+        y10a = x0 & x3 & x5 & x7
+        y10b = x2 & x5 & x7
+        y10c = x4 & x7
+        y10d = x6
+        m.d.comb += n[5].eq(~(y10a | y10b | y10c | y10d))
+
+        m.d.comb += n[6].eq(~(x1 & x3 & x5 & x7))
+
+        return m
+
+    @classmethod
+    def toRTL(cls) -> Tuple[Module, List[Signal]]:
+        m = Module()
+        m.submodules.chip = chip = cls()
+
+        return m, chip.ports()
+
+
+class IC_74181_and_or_layer3(Elaboratable):
+    """Logic for the third and-or layer of the 74181 4-bit ALU.
+    """
+
+    def __init__(self):
+        self.f = Signal(4)
+        self.n = Signal(7)
+        self.n_carryout = Signal()
+        self.a_eq_b = Signal()  # open-collector in the actual chip
+
+    def ports(self):
+        return [self.f, self.n, self.n_carryout, self.a_eq_b]
+
+    def elaborate(self, _: Platform) -> Module:
+        """Implements the logic of the 74181 chip.
+
+        The logic is from the logic diagram in the data
+        sheet, so that we're not fooled by any quirks.
+        """
+        m = Module()
+        f = self.f
+        n = self.n
+        n_cout = self.n_carryout
+        a_eq_b = self.a_eq_b
+
+        # This only works if function is minus with n_cin = 1.
+        # F = A - B - 1 = 1111 only if A = B.
+        m.d.comb += a_eq_b.eq(f[0] & f[1] & f[2] & f[3])
+        m.d.comb += n_cout.eq(~n[4] | ~n[5])
+
+        return m
+
+    @classmethod
+    def toRTL(cls) -> Tuple[Module, List[Signal]]:
+        m = Module()
+        m.submodules.chip = chip = cls()
+
+        return m, chip.ports()
+
+
+class IC_74688_and_or_layer1(Elaboratable):
+    def __init__(self):
+        self.x = Signal(8)
+        self.p_neq_q = Signal()
+
+    def ports(self):
+        return [self.x, self.p_neq_q]
+
+    def elaborate(self, _: Platform) -> Module:
+        m = Module()
+        x = self.x
+
+        m.d.comb += self.p_neq_q.eq(x[0] | x[1] |
+                                    x[2] | x[3] | x[4] | x[5] | x[6] | x[7])
+
+        return m
+
+    @ classmethod
+    def toRTL(cls) -> Tuple[Module, List[Signal]]:
+        m = Module()
+        m.submodules.chip = chip = cls()
+
+        return m, chip.ports()
+
+
 if __name__ == "__main__":
-    main(IC_74182_active_high)
+    main(IC_74688_and_or_layer1)
