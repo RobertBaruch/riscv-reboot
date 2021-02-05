@@ -146,7 +146,6 @@ class SequencerCard(Elaboratable):
         # now opens the transparent latch next.
         self._load_instr = Signal(reset=1)
 
-        self._instr_latch = TransparentLatch(32)
         self._pc_plus_4 = Signal(32)
         self._next_instr_phase = Signal(len(self.state._instr_phase))
         self._next_reg_page = Signal()
@@ -232,7 +231,6 @@ class SequencerCard(Elaboratable):
         """Implements the logic of the sequencer card."""
         m = Module()
 
-        m.submodules.instr_latch = self._instr_latch
         m.submodules.rom = self.rom
         m.submodules.trap_rom = self.trap_rom
         m.submodules.irq_load_rom = self.irq_load_rom
