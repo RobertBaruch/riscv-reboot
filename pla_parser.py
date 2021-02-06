@@ -186,18 +186,21 @@ class PLAParser():
 
         inputs = parts[0]
         outputs = parts[1]
-        products = []
+        terms = []
         for i, bit in enumerate(inputs):
             if bit == '1':
-                product = ProductTerm()
-                product.ones.append(self.inputs[i])
-                product.expr = And(self.inputs[i])
-                products.append(product)
+                terms.append(self.inputs[i])
         for i, bit in enumerate(outputs):
             if bit == '1':
-                self.or_terms[self.outputs[i]].products = products
-                self.or_terms[self.outputs[i]].expr = Xor(
-                    self.or_terms[self.outputs[i]].expr, product.expr)
+                self.or_terms[self.outputs[i]].expr = Xor(*terms)
+        #         product = ProductTerm()
+        #         product.ones.append(self.inputs[i])
+        #         product.expr = And(self.inputs[i])
+        #         products.append(product)
+        # for i, bit in enumerate(outputs):
+        #     if bit == '1':
+        #         self.or_terms[self.outputs[i]].products = products
+        #         self.or_terms[self.outputs[i]].expr = Xor(*products)
 
 
 class Fitter():
@@ -225,6 +228,7 @@ class Fitter():
         self.input_sigs = {}
 
     def map_inputs(self):
+        print("Mapping pin inputs")
         db = get_database()
         self.device = db["ATF1502AS"]
 
@@ -272,27 +276,33 @@ class Fitter():
             print(f"  set MC{mc}.pt5_func as")
 
     def map_and_or_layer(self, is_intermediate: bool):
+        print("Mapping AND-OR layer")
         device = self.device
 
         # For now, map the outputs directly onto MCs starting with
         # MC1.
-        for i, output in enumerate(self.outputs):
+        for output in self.outputs:
             or_term = self.or_terms[output]
             or_expr = or_term.expr
+            inv = False
             print(f"{output} = {or_term.expr}")
-            if len(or_term.products) > 5:
+            if isinstance(or_expr, pyeda.boolalg.expr.OrOp) and len(or_expr.xs) > 5:
                 # Maybe we can invert, and then use the macrocell's inverter to invert
                 # the result?
+                nor_expr = espresso_exprs(Not(or_term.expr).to_dnf())
                 # espresso_expr returns a tuple
                 # to_dnf converts an expression to disjunctive normal form
                 # (i.e. sum of products).
-                nor_expr = espresso_exprs(Not(or_term.expr).to_dnf())
                 nor_expr = nor_expr[0].to_dnf()
-                print(nor_expr)
-                print(
-                    f"ERROR: or-term for {output} needs more than"
-                    " one macrocell (5 products), which is not supported yet.")
-                return
+                print(f"Try the inverse of this instead: {nor_expr}")
+                if isinstance(nor_expr, pyeda.boolalg.expr.OrOp) and len(or_expr.xs) > 5:
+                    print(
+                        f"ERROR: or-term for {output} needs more than"
+                        " one macrocell (5 products), which is not supported yet.")
+                    return
+                or_expr = nor_expr
+                inv = True
+
             mc = self.get_next_mc()
             assert mc is not None, "Ran out of macrocells"
             mc_name = f"MC{mc}"
@@ -313,7 +323,15 @@ class Fitter():
             print(f"set {mc_name}.fb_mux xt")
             print(f"set {mc_name}.xor_a_mux sum")
             print(f"set {mc_name}.xor_b_mux VCC_pt12")
-            print(f"set {mc_name}.xor_invert on")
+
+            # It's weird, but because we have to feed a 1 into one input of
+            # the macrocell's XOR, it naturally inverts. There's another
+            # optional inverter after that, so if we want the non-inverted
+            # output of the OR gate, we have to turn that inverter on!
+            if inv:
+                print(f"set {mc_name}.xor_invert off")
+            else:
+                print(f"set {mc_name}.xor_invert on")
 
         # Now that we've mapped inputs to outputs, if the outputs are intermediate,
         # add them to the inputs and clear out the outputs.
@@ -327,13 +345,15 @@ class Fitter():
         pprint.pprint(self.input_sigs)
 
     def map_and_xor_layer(self, is_intermediate: bool):
+        print("Mapping XOR layer")
         device = self.device
 
         # For now, map the outputs directly onto MCs starting with
         # the next MC
-        for i, output in enumerate(self.outputs):
-            or_term = self.or_terms[output]
-            if len(or_term.products) != 2:
+        for output in self.outputs:
+            expr = self.or_terms[output].expr
+            assert isinstance(expr, pyeda.boolalg.expr.XorOp)
+            if len(expr.xs) != 2:
                 print(
                     f"ERROR: xor-term for {output} does not have 2 products, which is not supported yet.")
                 return
@@ -343,7 +363,7 @@ class Fitter():
             macrocell = device["macrocells"][mc_name]
             block = macrocell["block"]
             print(f"output {output} mapped to {mc_name}.FB in block {block}")
-            self.all_or_terms[block][mc_name] = or_term
+            self.all_or_exprs[block][mc_name] = expr
             if is_intermediate:
                 self.input_mcs[output] = mc
                 self.input_sigs[output] = f"MC{mc}_FB"
@@ -369,6 +389,106 @@ class Fitter():
         print("Input sigs:")
         pprint.pprint(self.input_sigs)
 
+    def set_uims(self):
+        # Collect all MCn_FB and Mn_PAD before choosing UIMs for each block.
+        # This is an instance of the assignment problem, which we solve using the
+        # Hungarian algorithm, which is O(n^3). The hope is that because the matrix
+        # is extremely sparse, the algorithm runs very quickly.
+
+        switches = self.device["switches"]
+
+        # Map signals to UIMs, per block
+        sig_to_uim = {}
+        for blk in dev["blocks"].keys():
+            sig_to_uim[blk] = {}
+        for switch, data in switches.items():
+            blk = data["block"]
+            switch_sigs = data["mux"]["values"].keys()
+            for sig in switch_sigs:
+                if sig not in sig_to_uim[blk]:
+                    sig_to_uim[blk][sig] = []
+                sig_to_uim[blk][sig].append(switch)
+
+        for blk in self.all_or_exprs:
+            print(f"Constructing set of signals in block {blk}")
+            # Construct the set of needed signals.
+            sigs = set()
+            for or_expr in self.all_or_exprs[blk].values():
+                sigs.update(set(self.input_sigs[str(term)]
+                                for term in or_expr.support))
+
+            # for or_term in p.all_or_terms[blk].values():
+            #     for product in or_term.products:
+            #         sigs.update(
+            #             set(p.input_sigs[n] for n in (product.zeros + product.ones)))
+
+            # Convert to ordered array
+            sigs = [s for s in sigs]
+            if len(sigs) == 0:
+                print(f"No used signals in block {blk}")
+                continue
+            print(f"Used signals in block {blk}: {sigs}")
+
+            # Construct the set of candidate switches for those signals.
+            candidate_switches = set()
+            for sig in sigs:
+                candidate_switches.update(set(s for s in sig_to_uim[blk][sig]))
+            # Convert to ordered array
+            candidate_switches = [s for s in candidate_switches]
+            print(f"Candidate switches in block {blk}: {candidate_switches}")
+
+            # Construct the cost matrix. We assign an different cost per candidate
+            # switch to help the algorithm be stable.
+            matrix = [[DISALLOWED for _ in range(
+                len(candidate_switches))] for _ in range(len(sigs))]
+            for row, sig in enumerate(sigs):
+                cost = 1
+                for candidate_switch in sig_to_uim[blk][sig]:
+                    col = candidate_switches.index(candidate_switch)
+                    matrix[row][col] = cost
+                    cost += 1
+            cost_matrix = make_cost_matrix(
+                matrix, lambda cost: cost if cost != DISALLOWED else DISALLOWED)
+
+            # Assign signals to switches.
+            m = Munkres()
+            indexes = m.compute(cost_matrix)
+            sig_to_switch = {}
+            # print_matrix(matrix, 'Based on this matrix:')
+            print("Setting UIM fuses:")
+            for r, c in indexes:
+                v = matrix[r][c]
+                print(f"set {candidate_switches[c]} {sigs[r]}")
+                sig_to_switch[sigs[r]] = candidate_switches[c]
+            # pprint.pprint(sig_to_switch)
+
+            print("Setting product term fuses:")
+            for mc_name, or_expr in self.all_or_exprs[blk].items():
+                products = or_expr.xs if isinstance(or_expr, pyeda.boolalg.expr.OrOp) or isinstance(
+                    or_expr, pyeda.boolalg.expr.XorOp) else [or_expr]
+
+                for ptn, product in enumerate(products):
+                    terms = product.xs if isinstance(
+                        product, pyeda.boolalg.expr.AndOp) else [product]
+                    for sig in terms:
+                        inv = isinstance(sig, pyeda.boolalg.expr.Complement)
+                        sig = str(Not(sig) if inv else sig)
+                        uim = sig_to_switch[self.input_sigs[sig]]
+                        switch_polarity = "_N" if inv else "_P"
+                        print(
+                            f"      set {mc_name}.PT{ptn} +{uim}{switch_polarity}")
+
+            # for mc_name, or_term in p.all_or_terms[blk].items():
+            #     for ptn, product in enumerate(or_term.products):
+            #         for zero in product.zeros:
+            #             sig = p.input_sigs[zero]
+            #             uim = sig_to_switch[sig]
+            #             print(f"      set {mc_name}.PT{ptn} +{uim}_N")
+            #         for one in product.ones:
+            #             sig = p.input_sigs[one]
+            #             uim = sig_to_switch[sig]
+            #             print(f"      set {mc_name}.PT{ptn} +{uim}_P")
+
 
 if __name__ == "__main__":
     db = get_database()
@@ -382,9 +502,9 @@ if __name__ == "__main__":
     p.or_terms = parse.or_terms
 
     p.map_inputs()
-    p.map_and_or_layer(is_intermediate=True)
+    # p.map_and_or_layer(is_intermediate=True)
 
-    for arg in sys.argv[2:]:
+    for arg in sys.argv[1:]:
         parse = PLAParser(arg)
         p.outputs = parse.outputs
         p.or_terms = parse.or_terms
@@ -396,107 +516,4 @@ if __name__ == "__main__":
         else:
             p.map_and_or_layer(is_intermediate=True)
 
-    # Collect all MCn_FB and Mn_PAD before choosing UIMs for each block.
-    # This is an instance of the assignment problem, which we solve using the
-    # Hungarian algorithm, which is O(n^3). The hope is that because the matrix
-    # is extremely sparse, the algorithm runs very quickly.
-
-    switches = dev["switches"]
-
-    # Map signals to UIMs, per block
-    sig_to_uim = {}
-    for blk in dev["blocks"].keys():
-        sig_to_uim[blk] = {}
-    for switch, data in switches.items():
-        blk = data["block"]
-        switch_sigs = data["mux"]["values"].keys()
-        for sig in switch_sigs:
-            if sig not in sig_to_uim[blk]:
-                sig_to_uim[blk][sig] = []
-            sig_to_uim[blk][sig].append(switch)
-
-    for blk in p.all_or_exprs:
-        print(f"Constructing set of signals in block {blk}")
-        # Construct the set of needed signals.
-        sigs = set()
-        for or_expr in p.all_or_exprs[blk].values():
-            for term in or_expr.support:
-                if isinstance(term, pyeda.boolalg.expr.Complement):
-                    sigs.add(p.input_sigs[str(term)[1:]])
-                else:
-                    sigs.add(p.input_sigs[str(term)])
-
-        # for or_term in p.all_or_terms[blk].values():
-        #     for product in or_term.products:
-        #         sigs.update(
-        #             set(p.input_sigs[n] for n in (product.zeros + product.ones)))
-
-        # Convert to ordered array
-        sigs = [s for s in sigs]
-        if len(sigs) == 0:
-            continue
-        print(f"Used signals in block {blk}: {sigs}")
-
-        # Construct the set of candidate switches for those signals.
-        candidate_switches = set()
-        for sig in sigs:
-            candidate_switches.update(set(s for s in sig_to_uim[blk][sig]))
-        # Convert to ordered array
-        candidate_switches = [s for s in candidate_switches]
-        print(f"Candidate switches in block {blk}: {candidate_switches}")
-
-        # Construct the cost matrix. We assign an different cost per candidate
-        # switch to help the algorithm be stable.
-        matrix = [[DISALLOWED for _ in range(
-            len(candidate_switches))] for _ in range(len(sigs))]
-        for row, sig in enumerate(sigs):
-            cost = 1
-            for candidate_switch in sig_to_uim[blk][sig]:
-                col = candidate_switches.index(candidate_switch)
-                # print(f"{sig} -> {candidate_switch} ({row},{col})")
-                matrix[row][col] = cost
-                cost += 1
-        cost_matrix = make_cost_matrix(
-            matrix, lambda cost: cost if cost != DISALLOWED else DISALLOWED)
-
-        # Assign signals to switches.
-        m = Munkres()
-        indexes = m.compute(cost_matrix)
-        sig_to_switch = {}
-        print_matrix(matrix, 'Lowest cost from this matrix:')
-        for r, c in indexes:
-            v = matrix[r][c]
-            print(f"set {candidate_switches[c]} {sigs[r]}")
-            sig_to_switch[sigs[r]] = candidate_switches[c]
-        pprint.pprint(sig_to_switch)
-
-        for mc_name, or_expr in p.all_or_exprs[blk].items():
-            if not isinstance(or_expr, pyeda.boolalg.expr.OrOp):
-                or_expr = Or(or_expr, 0, simplify=False)
-            for ptn, product in enumerate(or_expr.xs):
-                if str(product) == '0':
-                    break
-                if not isinstance(product, pyeda.boolalg.expr.AndOp):
-                    product = And(product, 1, simplify=False)
-                for sig in product.xs:
-                    sig = str(sig)
-                    inv = sig[0] == '~'
-                    if inv:
-                        sig = sig[1:]
-                    if sig == '1':
-                        break
-                    uim = sig_to_switch[p.input_sigs[sig]]
-                    switch_polarity = "_N" if inv else "_P"
-                    print(
-                        f"      set {mc_name}.PT{ptn} +{uim}{switch_polarity}")
-
-        # for mc_name, or_term in p.all_or_terms[blk].items():
-        #     for ptn, product in enumerate(or_term.products):
-        #         for zero in product.zeros:
-        #             sig = p.input_sigs[zero]
-        #             uim = sig_to_switch[sig]
-        #             print(f"      set {mc_name}.PT{ptn} +{uim}_N")
-        #         for one in product.ones:
-        #             sig = p.input_sigs[one]
-        #             uim = sig_to_switch[sig]
-        #             print(f"      set {mc_name}.PT{ptn} +{uim}_P")
+    p.set_uims()
