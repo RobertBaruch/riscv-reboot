@@ -193,14 +193,6 @@ class PLAParser():
         for i, bit in enumerate(outputs):
             if bit == '1':
                 self.or_terms[self.outputs[i]].expr = Xor(*terms)
-        #         product = ProductTerm()
-        #         product.ones.append(self.inputs[i])
-        #         product.expr = And(self.inputs[i])
-        #         products.append(product)
-        # for i, bit in enumerate(outputs):
-        #     if bit == '1':
-        #         self.or_terms[self.outputs[i]].products = products
-        #         self.or_terms[self.outputs[i]].expr = Xor(*products)
 
 
 class Fitter():
@@ -275,7 +267,7 @@ class Fitter():
             print(f"  set MC{mc}.oe_mux pt5")
             print(f"  set MC{mc}.pt5_func as")
 
-    def map_and_or_layer(self, is_intermediate: bool):
+    def map_and_or_layer(self):
         print("Mapping AND-OR layer")
         device = self.device
 
@@ -311,10 +303,10 @@ class Fitter():
             print(f"output {output} mapped to {mc_name}.FB in block {block}")
             self.all_or_terms[block][mc_name] = or_term
             self.all_or_exprs[block][mc_name] = or_expr
-            if is_intermediate:
-                self.input_mcs[output] = mc
-                self.input_sigs[output] = f"MC{mc}_FB"
+            self.input_mcs[output] = mc
+            self.input_sigs[output] = f"MC{mc}_FB"
 
+            print(f"set {mc_name}.pt_power on")
             print(f"set {mc_name}.pt1_mux sum")
             print(f"set {mc_name}.pt2_mux sum")
             print(f"set {mc_name}.pt3_mux sum")
@@ -333,18 +325,17 @@ class Fitter():
             else:
                 print(f"set {mc_name}.xor_invert on")
 
-        # Now that we've mapped inputs to outputs, if the outputs are intermediate,
+        # Now that we've mapped inputs to outputs,
         # add them to the inputs and clear out the outputs.
-        if is_intermediate:
-            self.inputs += self.outputs
-            self.outputs = []
+        self.inputs += self.outputs
+        self.outputs = []
 
         print("Input mcs:")
         pprint.pprint(self.input_mcs)
         print("Input sigs:")
         pprint.pprint(self.input_sigs)
 
-    def map_and_xor_layer(self, is_intermediate: bool):
+    def map_and_xor_layer(self):
         print("Mapping XOR layer")
         device = self.device
 
@@ -364,10 +355,10 @@ class Fitter():
             block = macrocell["block"]
             print(f"output {output} mapped to {mc_name}.FB in block {block}")
             self.all_or_exprs[block][mc_name] = expr
-            if is_intermediate:
-                self.input_mcs[output] = mc
-                self.input_sigs[output] = f"MC{mc}_FB"
+            self.input_mcs[output] = mc
+            self.input_sigs[output] = f"MC{mc}_FB"
 
+            print(f"set {mc_name}.pt_power on")
             print(f"set {mc_name}.pt1_mux sum")
             print(f"set {mc_name}.pt2_mux xor")
             print(f"set {mc_name}.pt3_mux sum")
@@ -378,11 +369,10 @@ class Fitter():
             print(f"set {mc_name}.xor_b_mux VCC_pt12")
             print(f"set {mc_name}.xor_invert on")
 
-        # Now that we've mapped inputs to outputs, if the outputs are intermediate,
+        # Now that we've mapped inputs to outputs,
         # add them to the inputs and clear out the outputs.
-        if is_intermediate:
-            self.inputs += self.outputs
-            self.outputs = []
+        self.inputs += self.outputs
+        self.outputs = []
 
         print("Input mcs:")
         pprint.pprint(self.input_mcs)
@@ -416,11 +406,6 @@ class Fitter():
             for or_expr in self.all_or_exprs[blk].values():
                 sigs.update(set(self.input_sigs[str(term)]
                                 for term in or_expr.support))
-
-            # for or_term in p.all_or_terms[blk].values():
-            #     for product in or_term.products:
-            #         sigs.update(
-            #             set(p.input_sigs[n] for n in (product.zeros + product.ones)))
 
             # Convert to ordered array
             sigs = [s for s in sigs]
@@ -478,17 +463,6 @@ class Fitter():
                         print(
                             f"      set {mc_name}.PT{ptn} +{uim}{switch_polarity}")
 
-            # for mc_name, or_term in p.all_or_terms[blk].items():
-            #     for ptn, product in enumerate(or_term.products):
-            #         for zero in product.zeros:
-            #             sig = p.input_sigs[zero]
-            #             uim = sig_to_switch[sig]
-            #             print(f"      set {mc_name}.PT{ptn} +{uim}_N")
-            #         for one in product.ones:
-            #             sig = p.input_sigs[one]
-            #             uim = sig_to_switch[sig]
-            #             print(f"      set {mc_name}.PT{ptn} +{uim}_P")
-
 
 if __name__ == "__main__":
     db = get_database()
@@ -502,7 +476,6 @@ if __name__ == "__main__":
     p.or_terms = parse.or_terms
 
     p.map_inputs()
-    # p.map_and_or_layer(is_intermediate=True)
 
     for arg in sys.argv[1:]:
         parse = PLAParser(arg)
@@ -510,10 +483,10 @@ if __name__ == "__main__":
         p.or_terms = parse.or_terms
 
         if parse.is_xor:
-            p.map_and_xor_layer(is_intermediate=True)
+            p.map_and_xor_layer()
         elif parse.is_outputs:
             p.map_output_layer()
         else:
-            p.map_and_or_layer(is_intermediate=True)
+            p.map_and_or_layer()
 
     p.set_uims()
